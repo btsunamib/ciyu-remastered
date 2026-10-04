@@ -21,7 +21,10 @@ export function parseBackup(text) {
   if (data.version === 2) return normalizeState(data);
   return migrateLegacy(data);
 }
-export function backupText(state) { return JSON.stringify({ ...state, exportedAt: new Date().toISOString() }, null, 2); }
+export function backupText(state) {
+  const settings = { ...state.settings }; delete settings.aiKey; delete settings.apiKey;
+  return JSON.stringify({ ...state, settings, exportedAt: new Date().toISOString() }, null, 2);
+}
 export function downloadFile(name, text, type = 'application/json') {
   const url = URL.createObjectURL(new Blob([text], { type }));
   const link = document.createElement('a'); link.href = url; link.download = name; link.click();

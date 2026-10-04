@@ -9,6 +9,7 @@
   <link rel="icon" type="image/svg+xml" href="icon.svg">
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="customize.css">
 </head>
 <body>
   <div id="wallpaper" aria-hidden="true"></div>
@@ -18,6 +19,7 @@
       <nav class="side-nav" aria-label="主导航">
         <button data-nav="library" class="nav-link active"><span data-icon="library"></span><span>我的词书</span></button>
         <button data-nav="review" class="nav-link"><span data-icon="calendar"></span><span>记忆复习</span><b id="nav-due" hidden></b></button>
+        <button data-nav="ai" data-ai-nav class="nav-link" hidden><span data-icon="sparkle"></span><span>AI 学习</span></button>
         <button data-nav="settings" class="nav-link"><span data-icon="settings"></span><span>学习设置</span></button>
       </nav>
       <div class="side-bottom"><div class="small-island" aria-hidden="true"><span></span><i></i><b>词</b></div><p>慢慢练，<br>每一次回忆都有意义。</p><div class="local-status"><i></i>进度保存在这台设备</div><button class="text-button" data-action="backup"><span data-icon="download"></span>备份我的词书</button></div>
@@ -28,7 +30,7 @@
       <footer class="page-footer"><span>每一个词，都是一座小岛。</span><span>词屿 · 重制版</span></footer>
     </div>
   </div>
-  <nav class="mobile-nav" aria-label="移动导航"><button data-nav="library" class="active"><span data-icon="library"></span>词书</button><button data-nav="review"><span data-icon="calendar"></span>复习</button><button data-nav="settings"><span data-icon="settings"></span>设置</button></nav>
+  <nav class="mobile-nav" aria-label="移动导航"><button data-nav="library" class="active"><span data-icon="library"></span>词书</button><button data-nav="review"><span data-icon="calendar"></span>复习</button><button data-nav="ai" data-ai-nav hidden><span data-icon="sparkle"></span>AI</button><button data-nav="settings"><span data-icon="settings"></span>设置</button></nav>
   <dialog id="modal" aria-labelledby="modal-title"><div id="modal-content"></div></dialog>
   <div id="toasts" class="toasts" role="status" aria-live="polite" aria-atomic="true"></div>
   <div id="audio-status" class="audio-status" role="status" aria-live="polite" hidden></div>
@@ -37,3 +39,4 @@
   <script type="module" src="app.js"></script>
 </body>
 </html>
+

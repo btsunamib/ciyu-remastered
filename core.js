@@ -12,7 +12,10 @@ export const INTERVALS = [20 * 60e3, 60 * 60e3, 9 * 3600e3, 24 * 3600e3, 2 * 864
 export const DEFAULT_SETTINGS = {
   batch: 12, gap: 7, wrongGap: 3, target: 3, mixOld: false, mixEvery: 5, mixCount: 2,
   autoSpeak: true, autoSpeakZh: true, rate: 0.95, accent: 'uk', zhVoiceURI: '', audioTemplate: '',
-  theme: 'auto', background: null
+  theme: 'auto', background: null,
+  aiEnabled: false, aiBase: 'https://api.openai.com/v1', aiModel: 'gpt-4.1-mini', aiLevel: 'B1', aiJsonMode: false,
+  uiPalette: 'iris', uiCustom: false, uiAccent: '#5666eb', uiBackground: '#f7f8fc', uiSurface: '#ffffff', uiText: '#252b43',
+  uiFont: 'sans', uiScale: 100, uiRadius: 20, uiCardWidth: 580, uiLayout: 'sidebar', uiDensity: 'comfortable', uiMotion: true, uiSelection: false
 };
 export const uid = () => globalThis.crypto?.randomUUID?.() || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 export const clone = value => structuredClone(value);
@@ -24,7 +27,7 @@ export function shuffle(list, random = Math.random) {
   for (let i = result.length - 1; i > 0; i--) { const j = Math.floor(random() * (i + 1)); [result[i], result[j]] = [result[j], result[i]]; }
   return result;
 }
-export const freshState = () => ({ version: 2, settings: { ...DEFAULT_SETTINGS }, books: [], sessions: {}, history: [], migratedAt: null });
+export const freshState = () => ({ version: 2, settings: { ...DEFAULT_SETTINGS }, books: [], sessions: {}, history: [], aiMaterials: [], migratedAt: null });
 export const sessionKey = (bookId, mode) => `${bookId}:${mode}`;
 export const bookById = (state, id) => state.books.find(book => book.id === id);
 export const wordById = (state, bookId, id) => bookById(state, bookId)?.words.find(word => word.id === id);
@@ -33,7 +36,12 @@ export function sanitizeSettings(input = {}) {
   for (const [key, min, max] of [['batch', 5, 30], ['gap', 1, 30], ['wrongGap', 1, 8], ['target', 2, 5], ['mixEvery', 1, 50], ['mixCount', 1, 5]]) {
     result[key] = Math.min(max, Math.max(min, Math.round(Number(input[key]) || result[key])));
   }
-  for (const key of ['mixOld', 'autoSpeak', 'autoSpeakZh']) if (typeof input[key] === 'boolean') result[key] = input[key];
+  for (const key of ['mixOld', 'autoSpeak', 'autoSpeakZh', 'aiEnabled', 'aiJsonMode', 'uiCustom', 'uiMotion', 'uiSelection']) if (typeof input[key] === 'boolean') result[key] = input[key];
+  for (const [key, min, max] of [['uiScale', 85, 125], ['uiRadius', 4, 32], ['uiCardWidth', 360, 820]]) result[key] = Math.min(max, Math.max(min, Number(input[key]) || result[key]));
+  for (const key of ['uiAccent', 'uiBackground', 'uiSurface', 'uiText']) if (/^#[0-9a-f]{6}$/i.test(input[key] || '')) result[key] = input[key];
+  for (const [key, choices] of [['uiPalette', ['iris', 'forest', 'sand', 'rose', 'ocean', 'grape']], ['uiFont', ['sans', 'serif', 'rounded']], ['uiLayout', ['sidebar', 'top']], ['uiDensity', ['comfortable', 'compact']], ['aiLevel', ['A2', 'B1', 'B2', 'C1']]]) if (choices.includes(input[key])) result[key] = input[key];
+  if (typeof input.aiBase === 'string' && input.aiBase.length < 500) { try { const url = new URL(input.aiBase); if (url.protocol === 'https:' && !url.username && !url.password && !url.search && !url.hash) result.aiBase = url.href.replace(/\/$/, ''); } catch {} }
+  if (typeof input.aiModel === 'string' && input.aiModel.trim()) result.aiModel = input.aiModel.trim().slice(0, 160);
   result.rate = Math.min(1.3, Math.max(0.6, Number(input.rate) || 0.95));
   result.accent = input.accent === 'us' ? 'us' : 'uk';
   result.theme = ['auto', 'light', 'dark'].includes(input.theme) ? input.theme : 'auto';
@@ -85,6 +93,12 @@ export function normalizeState(input) {
     }
   }
   state.history = Array.isArray(input.history) ? input.history.filter(h => h && MODE_INFO[h.mode] && Number.isFinite(h.finishedAt)).slice(-100) : [];
+  state.aiMaterials = Array.isArray(input.aiMaterials) ? input.aiMaterials.filter(m => m && ['example', 'story'].includes(m.kind) && typeof m.text === 'string' && typeof m.bookId === 'string').slice(-200).map(m => ({
+    id: typeof m.id === 'string' ? m.id : uid(), kind: m.kind, bookId: m.bookId,
+    wordIds: Array.isArray(m.wordIds) ? m.wordIds.filter(id => typeof id === 'string').slice(0, 12) : [],
+    title: String(m.title || '').slice(0, 200), text: m.text.slice(0, 14000), translation: String(m.translation || '').slice(0, 14000),
+    note: String(m.note || '').slice(0, 4000), words: Array.isArray(m.words) ? m.words.filter(w => typeof w === 'string').slice(0, 12) : [], createdAt: Number(m.createdAt) || Date.now()
+  })) : [];
   state.migratedAt = input.migratedAt || null;
   return state;
 }

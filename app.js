@@ -7,6 +7,8 @@ import {
 import { loadState, saveState, parseBackup, backupText, downloadFile } from './storage.js';
 import { Pronunciation } from './audio.js';
 import { icon } from './icons.js';
+import { installAI } from './ai-ui.js';
+import { applyAppearance, appearanceHTML, PALETTES } from './appearance.js';
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -14,6 +16,7 @@ const main = $('#main'); const dialog = $('#modal');
 const loaded = loadState(); let state = loaded.state;
 let route = 'library'; let confirmResolve = null; let lastFocused = null; let bookQuery = ''; let saveFailed = false; let inputSave = null; let recoveryRequired = !!loaded.error;
 const wordsStates = new Map();
+let ai;
 const darkQuery = matchMedia('(prefers-color-scheme: dark)');
 const audio = new Pronunciation(() => state.settings, (text, error) => {
   const element = $('#audio-status'); element.textContent = text; element.hidden = !text; element.classList.toggle('error', !!error);
@@ -26,7 +29,7 @@ function toast(message, error = false) {
 function persist() {
   if (recoveryRequired) return;
   try { saveState(state); saveFailed = false; }
-  catch { if (!saveFailed) toast('保存空间不足，请先导出备份，再移除自定义背景。', true); saveFailed = true; }
+  catch { if (!saveFailed) toast('保存空间不足，请先导出备份，再清理学习素材或自定义背景。', true); saveFailed = true; }
 }
 function applyTheme() {
   const dark = state.settings.theme === 'dark' || state.settings.theme === 'auto' && darkQuery.matches;
@@ -34,6 +37,7 @@ function applyTheme() {
   $('meta[name="theme-color"]').content = dark ? '#161a28' : '#f7f8fc';
   document.body.classList.toggle('with-bg', !!state.settings.background);
   $('#wallpaper').style.backgroundImage = state.settings.background ? `url("${state.settings.background}")` : '';
+  applyAppearance(state.settings, dark);
 }
 function decorate(root = document) { root.querySelectorAll('[data-icon]').forEach(node => { node.innerHTML = icon(node.dataset.icon); }); }
 function pct(done, total) { return total ? Math.round(done / total * 100) : 0; }
@@ -49,11 +53,13 @@ function navigation() {
   document.querySelectorAll('[data-nav]').forEach(button => button.classList.toggle('active', button.dataset.nav === active));
   const totalDue = state.books.reduce((sum, book) => sum + bookStats(book).due, 0);
   $('#nav-due').textContent = totalDue; $('#nav-due').hidden = !totalDue;
-  const names = { library: '我的词书', review: '记忆复习', settings: '学习设置' };
+  const names = { library: '我的词书', review: '记忆复习', settings: '学习设置', ai: 'AI 学习' };
   $('#breadcrumb').innerHTML = `我的学习空间 <span>/</span> ${esc(names[active] || '词表')}`;
   document.body.classList.toggle('focus-mode', route.startsWith('practice/') || route.startsWith('result/'));
+  ai?.navigation();
 }
 function navigate(next, options = {}) {
+  ai?.onNavigate();
   clearTimeout(inputSave); audio.stop(); route = next;
   const hash = `#${next}`; if (location.hash !== hash) history[options.replace ? 'replaceState' : 'pushState'](null, '', hash);
   render(options);
@@ -66,6 +72,7 @@ function render(options = {}) {
   else if (route.startsWith('book/')) renderWords(decodeURIComponent(route.slice(5)));
   else if (route === 'settings') renderSettings();
   else if (route === 'review') renderReview();
+  else if (route === 'ai') ai.renderPage();
   else renderLibrary();
   decorate(main);
 }
@@ -93,7 +100,7 @@ function renderLibrary() {
     <section class="welcome"><div class="welcome-copy"><div class="eyebrow">YOUR VOCABULARY ISLAND</div><h2>${due ? '让熟悉的词，再见一面。' : '今天，给记忆一点空间。'}</h2><p>${due ? `有 ${due} 个词到了复习时间，趁还记得，再巩固一次。` : '不用着急，一次只专注眼前的一小组。'}</p><button class="button primary" data-action="${due ? 'review-all' : state.books.length ? 'choose-mode' : 'demo'}" ${state.books.length && !due ? `data-book="${esc(state.books[0].id)}"` : ''}>${due ? '开始今日复习' : state.books.length ? '开始一小组' : '试学一组'}${icon('arrow')}</button></div><div class="hero-art" aria-hidden="true"><div class="hero-ring"></div><div class="hero-stone"></div><div class="hero-card back"><span>Aa</span><i></i><i></i></div><div class="hero-card"><span>a.</span><i></i><i></i></div><div class="hero-dot"></div></div></section>
     <div class="metrics"><div class="metric"><div class="metric-icon">${icon('library')}</div><div><div class="metric-value">${count}</div><div class="metric-label">我的词汇 · ${state.books.length} 本词书</div></div></div><div class="metric"><div class="metric-icon">${icon('calendar')}</div><div><div class="metric-value">${due}</div><div class="metric-label">今日待复习</div></div></div><div class="metric"><div class="metric-icon">${icon('checklist')}</div><div><div class="metric-value">${state.history.length}</div><div class="metric-label">已完成的练习</div></div></div></div>
     ${recent ? `<div class="continue-card">${icon('clock')}<div><h3>接着上次的节奏</h3><p>${esc(recent.bookId === 'all' ? '全部词书' : bookById(state, recent.bookId)?.name)} · ${MODE_INFO[recent.mode].name} · 还有 ${recent.active.length + recent.queue.length} 项</p></div><button class="button primary compact" data-action="resume" data-key="${esc(recent.key)}">继续练习${icon('arrow')}</button></div>` : ''}
-    <div class="section-head"><h2>我的词书<small>${state.books.length} 本</small></h2>${state.books.length ? `<div class="search-field">${icon('search')}<input class="input book-search" id="book-search" aria-label="搜索词书" placeholder="找一本词书…" value="${esc(bookQuery)}"></div>` : ''}</div>
+    ${state.settings.aiEnabled ? `<div class="ai-library-link"><span>${icon('sparkle')}让 AI 帮你把资料整理成词书</span><button class="button soft compact" data-action="ai-import">上传文档${icon('arrow')}</button></div>` : ''}<div class="section-head"><h2>我的词书<small>${state.books.length} 本</small></h2>${state.books.length ? `<div class="search-field">${icon('search')}<input class="input book-search" id="book-search" aria-label="搜索词书" placeholder="找一本词书…" value="${esc(bookQuery)}"></div>` : ''}</div>
     ${state.books.length ? '<div id="books" class="books"></div>' : `<div class="empty"><div class="empty-icon">${icon('book')}</div><h3>你的第一座词汇小岛</h3><p>把自己的单词、短语或句子粘贴进来，也可以上传 TXT。认读、听力、口语和写作，会各自记录进度。</p><div class="empty-actions"><button class="button primary" data-action="import">${icon('plus')}导入我的词书</button><button class="button" data-action="demo">先试学一组</button></div></div>`}
   </div>`;
   if (state.books.length) renderBookGrid();
@@ -228,7 +235,7 @@ function renderWordRows(book) {
 }
 function wordMenu(bookId, wordId) {
   const word = wordById(state, bookId, wordId); if (!word) return;
-  openModal(esc(word.en), esc(word.defs.join('；')), `<div class="menu-options"><button class="button" data-action="edit-word" data-book="${esc(bookId)}" data-word="${esc(wordId)}">${icon('pen')}编辑英文、音标和释义</button><button class="button" data-action="mark-all" data-book="${esc(bookId)}" data-word="${esc(wordId)}" data-value="${!word.mastered}">${icon('check')}四种模式全部${word.mastered ? '标为未掌握' : '标为已掌握'}</button><button class="button danger" data-action="delete-word" data-book="${esc(bookId)}" data-word="${esc(wordId)}">${icon('trash')}删除这个词</button></div>`);
+  openModal(esc(word.en), esc(word.defs.join('；')), `<div class="menu-options">${state.settings.aiEnabled ? `<button class="button soft" data-action="ai-open-word" data-book="${esc(bookId)}" data-word="${esc(wordId)}">${icon('sparkle')}用 AI 造句、编故事、问用法</button>` : ''}<button class="button" data-action="edit-word" data-book="${esc(bookId)}" data-word="${esc(wordId)}">${icon('pen')}编辑英文、音标和释义</button><button class="button" data-action="mark-all" data-book="${esc(bookId)}" data-word="${esc(wordId)}" data-value="${!word.mastered}">${icon('check')}四种模式全部${word.mastered ? '标为未掌握' : '标为已掌握'}</button><button class="button danger" data-action="delete-word" data-book="${esc(bookId)}" data-word="${esc(wordId)}">${icon('trash')}删除这个词</button></div>`);
 }
 function editWord(bookId, wordId) {
   const word = wordById(state, bookId, wordId); if (!word) return;
@@ -257,12 +264,12 @@ const toggleSetting = (key, title, description) => `<div class="setting-row"><di
 function renderSettings() {
   const voices = 'speechSynthesis' in window ? speechSynthesis.getVoices().filter(voice => voice.lang.toLowerCase().startsWith('zh')) : [];
   main.innerHTML = `<div class="page"><div class="page-intro"><div><h1>找到你的练习节奏。</h1><p>调整一次，每本词书都按你的习惯来。所有题目都手动继续。</p></div></div><div class="settings-grid"><div class="settings-stack">
-    <section class="panel"><div class="panel-head">${icon('book')}<h2>学习节奏</h2></div>${numberSetting('batch', '同时练多少个词', '掌握一个，再补进一个。小组更容易专注。', 5, 30)}${numberSetting('target', '认读连续认识几次算掌握', '不认识会重新计数。听力、口语和写作有各自的规则。', 2, 5)}${numberSetting('gap', '答对后，隔几个词再见', '用于认读、听力、口语，默认隔 7 个其他词。', 1, 30)}${numberSetting('wrongGap', '答错后，隔几个词再练', '忘记的词更快回来，默认隔 3 个其他词。', 1, 8)}<div class="notice" style="margin-top:20px">${icon('info')}写作采用更短间隔：写对隔 2 个词，写错隔 1 个词。任何模式都不会自动跳到下一题。</div></section>
+    ${ai.settingsHTML()}<section class="panel"><div class="panel-head">${icon('book')}<h2>学习节奏</h2></div>${numberSetting('batch', '同时练多少个词', '掌握一个，再补进一个。小组更容易专注。', 5, 30)}${numberSetting('target', '认读连续认识几次算掌握', '不认识会重新计数。听力、口语和写作有各自的规则。', 2, 5)}${numberSetting('gap', '答对后，隔几个词再见', '用于认读、听力、口语，默认隔 7 个其他词。', 1, 30)}${numberSetting('wrongGap', '答错后，隔几个词再练', '忘记的词更快回来，默认隔 3 个其他词。', 1, 8)}<div class="notice" style="margin-top:20px">${icon('info')}写作采用更短间隔：写对隔 2 个词，写错隔 1 个词。任何模式都不会自动跳到下一题。</div></section>
     <section class="panel"><div class="panel-head">${icon('reset')}<h2>回访旧词</h2></div>${toggleSetting('mixOld', '学习中顺便复习旧词', '认读时，穿插以前掌握的词。如果忘了，会重新巩固。')}<div id="mix-options" ${state.settings.mixOld ? '' : 'hidden'}>${numberSetting('mixEvery', '每掌握多少个新词触发', '默认掌握 5 个新词后，回访一次旧词。', 1, 50)}${numberSetting('mixCount', '每次回访几个旧词', '默认随机插入 2 个旧词。', 1, 5)}</div></section>
     <section class="panel"><div class="panel-head">${icon('shield')}<h2>词书与备份</h2></div><p class="hint" style="margin-bottom:17px">词书、进度和设置都保存在这台设备的浏览器里。导出一份备份，可以在另一台设备接着练。</p><div class="setting-actions"><button class="button primary" data-action="backup">${icon('download')}导出完整备份</button><label class="button" for="backup-file">${icon('upload')}导入备份<input type="file" accept=".json,application/json" id="backup-file" hidden></label><button class="button" data-action="legacy-help">迁移旧版数据</button><button class="button" data-action="clear-audio-cache">清除音频缓存</button><button class="button danger" data-action="clear-data">清除全部数据</button></div><p class="hint" style="margin-top:14px">备份包含词书、四套学习进度、未完成的练习与复习安排。</p></section>
   </div><div class="settings-stack">
     <section class="panel"><div class="panel-head">${icon('headphones')}<h2>发音与跟读</h2></div><div class="setting-row"><div><h3>英语发音</h3><p>有道音频 · 单词、词组与句子<br>首次播放需要联网。</p></div><select data-setting="accent" aria-label="英语口音"><option value="uk" ${state.settings.accent === 'uk' ? 'selected' : ''}>英式发音</option><option value="us" ${state.settings.accent === 'us' ? 'selected' : ''}>美式发音</option></select></div><div class="setting-row"><div><h3>发音速度</h3><p>慢一点跟读，熟悉后再加快。</p></div><div class="range-row"><input type="range" data-setting="rate" aria-label="发音速度" min="0.6" max="1.3" step="0.05" value="${state.settings.rate}"><output id="rate-value">${state.settings.rate.toFixed(2)}×</output></div></div>${toggleSetting('autoSpeak', '自动播放英文', '认读、听音题和英文回忆题会自动发音。听写题始终先播放。')}${toggleSetting('autoSpeakZh', '自动朗读中文', '揭晓答案时朗读中文释义，使用系统中文声音。')}<div class="setting-row"><div><h3>中文发音人</h3><p>设备可用的中文声音。</p></div><select data-setting="zhVoiceURI" aria-label="中文发音人"><option value="">系统默认</option>${voices.map(voice => `<option value="${esc(voice.voiceURI)}" ${voice.voiceURI === state.settings.zhVoiceURI ? 'selected' : ''}>${esc(voice.name)}</option>`).join('')}</select></div><div class="setting-actions" style="margin-top:18px"><button class="button soft" data-action="test-en">${icon('volume')}试听英文</button><button class="button" data-action="test-zh">${icon('volume')}试听中文</button></div><details class="format-help" style="margin-bottom:0"><summary>使用自己的英语音源</summary><p>填写 HTTPS 音频链接模板，<code>{text}</code> 会替换为英文，<code>{accent}</code> 为英音 1 / 美音 2。留空使用默认音源。</p><input class="input" id="audio-template" data-setting="audioTemplate" aria-label="自定义英语音源" placeholder="https://…?text={text}" value="${esc(state.settings.audioTemplate)}"></details></section>
-    <section class="panel"><div class="panel-head">${icon('sun')}<h2>我的学习空间</h2></div><div class="setting-row"><div><h3>页面主题</h3><p>按你的环境，调整明暗。</p></div><select data-setting="theme" aria-label="页面主题">${[['auto','跟随系统'],['light','浅色'],['dark','深色']].map(([value,label]) => `<option value="${value}" ${state.settings.theme === value ? 'selected' : ''}>${label}</option>`).join('')}</select></div><div class="setting-row"><div><h3>自定义背景</h3><p>选择喜欢的图片，会自动压缩并柔化。</p></div></div><div class="setting-actions" style="margin-top:16px"><label class="button" for="background-file">${icon('upload')}选择图片<input id="background-file" type="file" accept="image/*" hidden></label><button class="button" data-action="clear-background">恢复默认</button></div>${state.settings.background ? `<div class="bg-preview" style="background-image:url('${state.settings.background}')"></div>` : ''}</section>
+    <section class="panel"><div class="panel-head">${icon('sun')}<h2>我的学习空间</h2></div><div class="setting-row"><div><h3>页面主题</h3><p>按你的环境，调整明暗。</p></div><select data-setting="theme" aria-label="页面主题">${[['auto','跟随系统'],['light','浅色'],['dark','深色']].map(([value,label]) => `<option value="${value}" ${state.settings.theme === value ? 'selected' : ''}>${label}</option>`).join('')}</select></div>${appearanceHTML(state.settings)}<div class="setting-row"><div><h3>自定义背景</h3><p>选择喜欢的图片，会自动压缩并柔化。</p></div></div><div class="setting-actions" style="margin-top:16px"><label class="button" for="background-file">${icon('upload')}选择图片<input id="background-file" type="file" accept="image/*" hidden></label><button class="button" data-action="clear-background">恢复默认</button></div>${state.settings.background ? `<div class="bg-preview" style="background-image:url('${state.settings.background}')"></div>` : ''}</section>
     <section class="panel"><div class="panel-head">${icon('info')}<h2>随手用的快捷键</h2></div><p class="hint">认读／听音／复习：1 不认识，2 认识。<br>口语揭晓后：1 说对了，2 没说出来。<br>输入英文后：Enter 检查。<br>看完答案：Enter 或 → 继续。<br>空格：重听发音；输入框中仍可正常输入空格。</p></section>
   </div></div></div>`;
 }
@@ -315,6 +322,7 @@ function sessionActions(session) {
   return `${correction ? `<button class="button danger" data-action="correct-answer">记错了</button>` : retry ? `<button class="button" data-action="retry-answer">再写一次</button>` : ''}<button class="button primary" data-action="next-answer">${session.pending?.correct ? '确认，继续' : session.mode === 'audit' ? '记下错词，继续' : '记住了，继续'}${icon('arrow')}</button>`;
 }
 function renderSession(key, options = {}) {
+  if (!state.settings.uiSelection) window.getSelection()?.removeAllRanges();
   const session = state.sessions[key]; if (!session) { navigate('library', { replace: true }); return; }
   let item = currentItem(session); if (!item) { item = chooseNext(session); persist(); }
   if (!item) { navigate('library', { replace: true }); return; }
@@ -326,7 +334,7 @@ function renderSession(key, options = {}) {
     <header class="session-header"><a class="session-brand" href="#library"><img src="icon.svg" alt=""><span>词屿</span></a><div class="session-meta"><h1>${esc(book)}</h1><p>${info.name} · ${info.short}</p></div><button class="button" data-action="exit-session">暂停并退出</button></header>
     <div class="session-progress" role="progressbar" aria-label="本轮进度" aria-valuemin="0" aria-valuemax="${session.initialTotal}" aria-valuenow="${progress}"><i style="width:${pct(progress, session.initialTotal)}%"></i></div>
     <div class="session-stats"><span>完成 <b>${progress}</b> / ${session.initialTotal}${session.mode === 'audit' ? ' · 本书全部词汇' : ` · 本组 ${session.active.length} 项`}</span><span>待加入 <b>${session.queue.length}</b> · 答对 <b>${session.right}</b> · 答错 <b>${session.wrong}</b></span></div>
-    <div class="study-card" id="study-card" aria-live="polite">${feedback ? answerContent(session, item) : questionContent(session, item)}</div>
+    <div class="study-card" id="study-card" aria-live="polite">${feedback ? answerContent(session, item) : questionContent(session, item)}${ai.studyHTML(session, item)}</div>
     <div class="session-actions">${sessionActions(session)}</div><p class="session-help">${caption}</p></section>`;
   if (!feedback && $('#answer-input')) {
     $('#answer-input').focus({ preventScroll: true });
@@ -367,7 +375,7 @@ function renderResult(id) {
     <div class="empty-actions"><button class="button" data-nav="library">返回我的词书</button>${result.mode === 'audit' && result.auditWrongIds.length ? `<button class="button primary" data-action="audit-mistakes" data-book="${esc(result.bookId)}">看看错词${icon('arrow')}</button>` : `<button class="button primary" data-action="again" data-book="${esc(result.bookId)}" data-mode="${result.mode}">再练一轮${icon('arrow')}</button>`}</div></section>`;
 }
 function celebrate(count) {
-  if (matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  if (!state.settings.uiMotion || matchMedia('(prefers-reduced-motion: reduce)').matches) return;
   const colors = ['#8597ff', '#91c8ab', '#d2b1e1', '#ebc88c'];
   for (let i = 0; i < count; i++) {
     const dot = document.createElement('i'); dot.style.background = colors[i % colors.length];
@@ -452,11 +460,14 @@ document.addEventListener('click', async event => {
       case 'restore-order': { const book = bookById(state, bookId), ui = wordsUi(book); ui.order = book.words.map(w => w.id); ui.hiddenEn.clear(); ui.hiddenDef.clear(); ui.page = 0; renderWordRows(book); break; }
       case 'word-page': { const book = bookById(state, bookId); wordsUi(book).page = Number(button.dataset.page); renderWordRows(book); $('#word-count').scrollIntoView({ block: 'start' }); break; }
       case 'theme': state.settings.theme = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'; persist(); applyTheme(); if (route === 'settings') renderSettings(); break;
+      case 'appearance-palette': if (PALETTES[button.dataset.palette]) { state.settings.uiPalette = button.dataset.palette; state.settings.uiCustom = false; persist(); applyTheme(); renderSettings(); } break;
+      case 'appearance-reset': for (const [key,value] of Object.entries(DEFAULT_SETTINGS)) if (key.startsWith('ui')) state.settings[key] = value; state.settings.theme = 'auto'; state.settings.background = null; persist(); applyTheme(); renderSettings(); toast('已恢复默认外观'); break;
+      case 'appearance-export': { const appearance = Object.fromEntries(Object.entries(state.settings).filter(([key]) => key.startsWith('ui') || ['theme','background'].includes(key))); downloadFile('词屿外观方案.json', JSON.stringify({ kind: 'ciyu-appearance', version: 1, appearance }, null, 2)); toast('外观方案已导出'); break; }
       case 'clear-audio-cache': if ('caches' in window) { await caches.delete('ciyu-remastered-audio-v1'); toast('英语音频缓存已清除，词书和进度保留'); } else toast('这台设备没有启用音频缓存'); break;
       case 'test-en': audio.english('Every small step brings you closer.'); break;
       case 'test-zh': audio.stop(); audio.chinese('慢慢练，每一次回忆都有意义。', true); break;
       case 'clear-background': state.settings.background = null; persist(); applyTheme(); renderSettings(); toast('已恢复默认背景'); break;
-      case 'clear-data': if (await confirm('清除新版的全部数据？', '新版词书、学习进度、复习安排和设置都会清除。这个操作无法撤销，请先导出备份。旧版数据不会删除。', '清除全部数据', true)) { state = { version: 2, settings: { ...DEFAULT_SETTINGS }, books: [], sessions: {}, history: [], migratedAt: Date.now() }; recoveryRequired = false; wordsStates.clear(); persist(); applyTheme(); navigate('library'); toast('新版数据已清除'); } break;
+      case 'clear-data': if (await confirm('清除新版的全部数据？', '新版词书、学习进度、复习安排、AI 素材、密钥和设置都会清除。这个操作无法撤销，请先导出备份。旧版数据不会删除。', '清除全部数据', true)) { state = { version: 2, settings: { ...DEFAULT_SETTINGS }, books: [], sessions: {}, history: [], aiMaterials: [], migratedAt: Date.now() }; recoveryRequired = false; wordsStates.clear(); ai.cancelAll(); ai.saveAIKey(''); persist(); applyTheme(); navigate('library'); toast('新版数据已清除'); } break;
       case 'legacy-help': legacyHelp(); break;
       case 'copy-legacy': { const text = $('#legacy-snippet').value; try { await navigator.clipboard.writeText(text); toast('代码已复制'); } catch { $('#legacy-snippet').select(); toast('已选中代码，请复制'); } break; }
       case 'exit-session': persist(); navigate('library'); break;
@@ -478,6 +489,11 @@ document.addEventListener('input', event => {
   else if (event.target.id === 'words-search') { const book = bookById(state, decodeURIComponent(route.slice(5))); if (book) { wordsUi(book).search = event.target.value; wordsUi(book).page = 0; renderWordRows(book); } }
   else if (event.target.id === 'answer-input') { const session = activeSession(); if (session) { session.input = event.target.value; clearTimeout(inputSave); inputSave = setTimeout(persist, 180); } }
   else if (event.target.dataset.setting === 'rate') { state.settings.rate = Number(event.target.value); $('#rate-value').textContent = `${state.settings.rate.toFixed(2)}×`; persist(); }
+  else if (event.target.dataset.setting?.startsWith('ui') && ['range','color'].includes(event.target.type)) {
+    const key = event.target.dataset.setting, value = event.target.type === 'range' ? Number(event.target.value) : event.target.value;
+    state.settings = sanitizeSettings({ ...state.settings, [key]: value }); const output = $(`#${key}-value`); if (output) output.textContent = `${state.settings[key]}${event.target.dataset.unit || ''}`;
+    persist(); applyTheme();
+  }
 });
 document.addEventListener('change', async event => {
   const element = event.target;
@@ -485,19 +501,32 @@ document.addEventListener('change', async event => {
     const key = element.dataset.setting;
     const value = element.type === 'checkbox' ? element.checked : element.type === 'number' || element.type === 'range' ? Number(element.value) : element.value;
     if (key === 'audioTemplate' && value && (!value.startsWith('https://') || !value.includes('{text}'))) { toast('请填写包含 {text} 的 HTTPS 音频链接', true); element.value = state.settings.audioTemplate; return; }
+    if (key === 'uiCustom' && value) {
+      const style = getComputedStyle(document.documentElement);
+      for (const [setting,property] of [['uiAccent','--primary'],['uiBackground','--bg'],['uiSurface','--panel'],['uiText','--text']]) { const color = style.getPropertyValue(property).trim(); if (/^#[0-9a-f]{6}$/i.test(color)) state.settings[setting] = color; }
+    }
     state.settings = sanitizeSettings({ ...state.settings, [key]: value }); persist();
     if (element.type === 'number') element.value = state.settings[key];
     if (key === 'mixOld') $('#mix-options').hidden = !state.settings.mixOld;
-    if (key === 'theme') applyTheme();
+    if (key === 'theme' || key.startsWith('ui')) applyTheme();
+    if (key === 'uiCustom') { $('#custom-color-fields').hidden = !state.settings.uiCustom; $('#custom-color-fields').querySelectorAll('[data-setting]').forEach(input => { input.value = state.settings[input.dataset.setting]; $(`#${input.dataset.setting}-value`).textContent = input.value; }); }
     if (key === 'accent' || key === 'audioTemplate') audio.stop();
   } else if (element.id === 'words-mode' || element.id === 'words-filter') {
     const book = bookById(state, decodeURIComponent(route.slice(5))); if (!book) return;
     const ui = wordsUi(book); ui[element.id === 'words-mode' ? 'mode' : 'filter'] = element.value; ui.page = 0; renderWordRows(book);
   } else if (element.id === 'backup-file') { await restoreBackup(element.files[0]); element.value = ''; }
   else if (element.id === 'background-file') await uploadBackground(element.files[0]);
+  else if (element.id === 'appearance-file') {
+    try {
+      const file = element.files[0]; if (!file) return; if (file.size > 5 * 1024 * 1024) throw new Error('外观方案过大，请选择词屿导出的方案');
+      const data = JSON.parse(await file.text()); if (data.kind !== 'ciyu-appearance' || !data.appearance || typeof data.appearance !== 'object') throw new Error('请选择词屿导出的外观方案');
+      const appearance = Object.fromEntries(Object.entries(data.appearance).filter(([key]) => key.startsWith('ui') || ['theme','background'].includes(key)));
+      state.settings = sanitizeSettings({ ...state.settings, ...appearance }); persist(); applyTheme(); renderSettings(); toast('外观方案已应用');
+    } catch (error) { toast(error.message || '无法读取外观方案', true); }
+  }
 });
 document.addEventListener('keydown', event => {
-  if (dialog.open || event.repeat || event.ctrlKey || event.metaKey || event.altKey) return;
+  if (dialog.open || event.repeat || event.isComposing || event.ctrlKey || event.metaKey || event.altKey || event.target.closest('.ai-panel,.ai-page')) return;
   const session = activeSession(); if (!session) return;
   if (event.target.matches('input,textarea,select')) {
     if (event.key === 'Enter' && !event.shiftKey && event.target.id === 'answer-input') { event.preventDefault(); grade(event.target.value); }
@@ -518,6 +547,10 @@ window.addEventListener('pagehide', persist);
 document.addEventListener('visibilitychange', () => { if (document.hidden) { audio.stop(); persist(); } else if (route === 'review' || route === 'library') render(); });
 darkQuery.addEventListener('change', () => { if (state.settings.theme === 'auto') applyTheme(); });
 window.addEventListener('storage', event => { if (event.key === STORAGE_KEY) toast('另一页更新了词书。请刷新本页后继续，避免覆盖。', true); });
+ai = installAI({ getState: () => state, main, persist, toast, navigate, openModal, closeModal, audio,
+  getStudyContext: () => { const session = activeSession(), item = currentItem(session); return session && item ? { session, item } : null; }
+});
+document.addEventListener('selectstart', event => { if (!state.settings.uiSelection && !event.target.closest('input,textarea,[contenteditable="true"]')) event.preventDefault(); });
 applyTheme(); decorate();
 route = location.hash.slice(1) || 'library'; render();
 if (loaded.migrated) toast('旧版词书和进度已迁移，欢迎来到新版词屿。');

@@ -1,6 +1,6 @@
-const SHELL = 'ciyu-remastered-shell-20261004-1';
+const SHELL = 'ciyu-remastered-shell-20261004-ai-2';
 const AUDIO = 'ciyu-remastered-audio-v1';
-const FILES = ['./', './index.html', './style.css', './icon.svg', './manifest.webmanifest', './app.js', './core.js', './storage.js', './audio.js', './icons.js'];
+const FILES = ['./', './index.html', './style.css', './customize.css', './ai.js', './ai-ui.js', './appearance.js', './icon.svg', './manifest.webmanifest', './app.js', './core.js', './storage.js', './audio.js', './icons.js'];
 self.addEventListener('install', event => { event.waitUntil(caches.open(SHELL).then(cache => cache.addAll(FILES)).then(() => self.skipWaiting())); });
 self.addEventListener('activate', event => {
   event.waitUntil(caches.keys().then(keys => Promise.all(keys.filter(key => key.startsWith('ciyu-remastered-shell-') && key !== SHELL).map(key => caches.delete(key)))).then(() => self.clients.claim()));
@@ -34,3 +34,4 @@ self.addEventListener('fetch', event => {
     catch (error) { if (request.mode === 'navigate') return caches.match('./index.html'); throw error; }
   })());
 });
+
