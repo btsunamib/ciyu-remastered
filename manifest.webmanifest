@@ -1,0 +1,4 @@
+{
+  "name": "词屿 · 让词汇成为直觉", "short_name": "词屿", "lang": "zh-CN", "start_url": "./", "scope": "./", "display": "standalone", "background_color": "#f7f8fc", "theme_color": "#5666eb",
+  "icons": [{ "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }]
+}

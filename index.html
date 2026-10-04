@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#f7f8fc">
+  <meta name="description" content="词屿：认读、听力、口语、写作与间隔复习。安静、顺手的词汇练习空间。">
+  <title>词屿 · 让词汇成为直觉</title>
+  <link rel="icon" type="image/svg+xml" href="icon.svg">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="wallpaper" aria-hidden="true"></div>
+  <div class="shell" id="shell">
+    <aside class="sidebar">
+      <a href="#library" class="brand" aria-label="词屿，返回书库"><img src="icon.svg" alt="" width="39" height="39"><span>词屿<small>让词汇成为直觉</small></span></a>
+      <nav class="side-nav" aria-label="主导航">
+        <button data-nav="library" class="nav-link active"><span data-icon="library"></span><span>我的词书</span></button>
+        <button data-nav="review" class="nav-link"><span data-icon="calendar"></span><span>记忆复习</span><b id="nav-due" hidden></b></button>
+        <button data-nav="settings" class="nav-link"><span data-icon="settings"></span><span>学习设置</span></button>
+      </nav>
+      <div class="side-bottom"><div class="small-island" aria-hidden="true"><span></span><i></i><b>词</b></div><p>慢慢练，<br>每一次回忆都有意义。</p><div class="local-status"><i></i>进度保存在这台设备</div><button class="text-button" data-action="backup"><span data-icon="download"></span>备份我的词书</button></div>
+    </aside>
+    <div class="main-column">
+      <header class="topbar"><a class="mobile-brand" href="#library"><img src="icon.svg" alt="" width="30" height="30">词屿</a><div class="breadcrumb" id="breadcrumb">我的学习空间 <span>/</span> 我的词书</div><div class="top-actions"><button class="icon-button" data-action="theme" aria-label="切换深浅色" title="切换深浅色"><span data-icon="sun"></span></button><button class="button primary compact" data-action="import"><span data-icon="plus"></span><span>导入词书</span></button></div></header>
+      <main id="main" tabindex="-1"></main>
+      <footer class="page-footer"><span>每一个词，都是一座小岛。</span><span>词屿 · 重制版</span></footer>
+    </div>
+  </div>
+  <nav class="mobile-nav" aria-label="移动导航"><button data-nav="library" class="active"><span data-icon="library"></span>词书</button><button data-nav="review"><span data-icon="calendar"></span>复习</button><button data-nav="settings"><span data-icon="settings"></span>设置</button></nav>
+  <dialog id="modal" aria-labelledby="modal-title"><div id="modal-content"></div></dialog>
+  <div id="toasts" class="toasts" role="status" aria-live="polite" aria-atomic="true"></div>
+  <div id="audio-status" class="audio-status" role="status" aria-live="polite" hidden></div>
+  <div id="confetti" class="confetti" aria-hidden="true"></div>
+  <noscript>词屿需要启用 JavaScript 才能保存词书与进行练习。</noscript>
+  <script type="module" src="app.js"></script>
+</body>
+</html>
