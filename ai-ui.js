@@ -1,5 +1,5 @@
 import { uid, bookById, wordById, importEntries, shuffle } from './core.js';
-import { requestAI, createExample, createStory, readStudyDocument, extractVocabulary, readAIKey, saveAIKey, remembersAIKey, completionURL, documentChunks } from './ai.js';
+import { requestAI, createExample, createStory, readStudyDocument, extractVocabulary, readAIKey, saveAIKey, remembersAIKey, completionURL, documentChunks, fetchModels } from './ai.js';
 import { icon } from './icons.js';
 
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -9,6 +9,25 @@ export function installAI(bridge) {
   let bookId = '', selected = new Set(), tab = 'story', conversation = [], documentAbort = null, pageAbort = null;
   const inlineJobs = new Map();
   const inlineVisible = new Map();
+  let models = [], modelsBase = '', modelsKey = '', modelsAbort = null;
+  async function refreshModels() {
+    modelsAbort?.abort();
+    const select = $('#ai-model'), status = $('#ai-model-status');
+    if (!select || !status) return;
+    const settings = { ...state().settings }, key = readAIKey();
+    const controller = new AbortController(); modelsAbort = controller;
+    select.disabled = true; status.textContent = '正在获取模型列表…';
+    try {
+      const ids = await fetchModels(settings, controller.signal);
+      if (controller.signal.aborted || !select.isConnected || settings.aiBase !== state().settings.aiBase || key !== readAIKey()) return;
+      models = ids; modelsBase = settings.aiBase; modelsKey = key;
+      if (!ids.includes(state().settings.aiModel)) { state().settings.aiModel = ''; bridge.persist(); }
+      select.innerHTML = `<option value="">请选择模型</option>${ids.map(id => `<option value="${esc(id)}" ${id === state().settings.aiModel ? 'selected' : ''}>${esc(id)}</option>`).join('')}`;
+      select.value = state().settings.aiModel;
+      status.textContent = `已获取 ${ids.length} 个模型，请选择支持所需功能的模型；图片识别需要视觉模型。`;
+    } catch (error) { if (!controller.signal.aborted && status.isConnected) status.textContent = error.message; }
+    finally { if (modelsAbort === controller) { modelsAbort = null; if (select.isConnected) select.disabled = false; } }
+  }
   const configured = () => state().settings.aiEnabled && !!readAIKey();
   const contextWord = () => { const context = bridge.getStudyContext(); return context && { bookId: context.item.bookId, word: wordById(state(), context.item.bookId, context.item.wordIds[0]), ...context }; };
   const currentBook = () => bookById(state(), bookId) || state().books[0];
@@ -17,16 +36,18 @@ export function installAI(bridge) {
     if (configured()) return true;
     bridge.toast(state().settings.aiEnabled ? '先填写 API 密钥，再使用 AI 学习' : '先在设置中打开 AI 学习助手'); bridge.navigate('settings'); return false;
   }
-  function cancelAll() { documentAbort?.abort(); pageAbort?.abort(); for (const job of inlineJobs.values()) job.abort(); inlineJobs.clear(); }
+  function cancelAll() { modelsAbort?.abort(); documentAbort?.abort(); pageAbort?.abort(); for (const job of inlineJobs.values()) job.abort(); inlineJobs.clear(); }
   function navigation() { document.documentElement.dataset.ai = state().settings.aiEnabled ? 'on' : 'off'; document.querySelectorAll('[data-ai-nav]').forEach(node => { node.hidden = !state().settings.aiEnabled; }); }
   function settingsHTML() {
     const s = state().settings;
+    if (modelsBase !== s.aiBase || modelsKey !== readAIKey()) models = [];
+    if (s.aiEnabled && readAIKey()) queueMicrotask(refreshModels);
     return `<section class="panel ai-settings"><div class="panel-head">${icon('sparkle')}<h2>AI 学习助手</h2></div>
       <div class="setting-row"><div><h3>开启 AI 功能</h3><p>默认关闭。开启后可造句、编故事、问答和整理文档。</p></div><label class="toggle"><input type="checkbox" data-setting="aiEnabled" aria-label="开启 AI 功能" ${s.aiEnabled ? 'checked' : ''}><span></span></label></div>
       <div id="ai-settings-fields" ${s.aiEnabled ? '' : 'hidden'}>
       <div class="ai-provider-buttons"><button class="button compact" data-action="ai-provider" data-provider="openai">OpenAI</button><button class="button compact" data-action="ai-provider" data-provider="deepseek">DeepSeek</button><span class="hint">也可填写其他兼容接口</span></div>
       <div class="field"><label for="ai-base">API 地址</label><input class="input" id="ai-base" data-setting="aiBase" type="url" value="${esc(s.aiBase)}" placeholder="https://你的服务地址/v1" autocapitalize="none" spellcheck="false"><p class="hint">支持 OpenAI Chat Completions 格式；完整 /chat/completions 地址也可用。</p></div>
-      <div class="field"><label for="ai-model">模型名称</label><input class="input" id="ai-model" data-setting="aiModel" value="${esc(s.aiModel)}" placeholder="填写服务商提供的模型 ID" autocapitalize="none" spellcheck="false"></div>
+      <div class="field"><label for="ai-model">选择模型</label><div class="ai-key-row"><select id="ai-model" data-setting="aiModel" aria-describedby="ai-model-status"><option value="">先获取模型列表</option>${(models.length ? models : s.aiModel ? [s.aiModel] : []).map(id => `<option value="${esc(id)}" ${id === s.aiModel ? 'selected' : ''}>${esc(id)}</option>`).join('')}</select><button class="button compact" data-action="ai-model-refresh">获取 / 刷新列表</button></div><p class="hint" id="ai-model-status" role="status">填写密钥后自动获取，也可手动刷新。列表来自当前接口的 /models。</p></div>
       <div class="field"><label for="ai-key">API 密钥</label><div class="ai-key-row"><input class="input" type="password" id="ai-key" value="${esc(readAIKey())}" placeholder="粘贴你的密钥" autocomplete="off" autocapitalize="none" spellcheck="false"><button class="button compact" data-action="ai-clear-key">清除</button></div><label class="check-label"><input id="ai-remember-key" type="checkbox" ${remembersAIKey() ? 'checked' : ''}>在这台设备记住密钥</label><p class="hint">密钥不会写入词书备份。未勾选时只保留在当前浏览器会话。请求直接发送到你填写的服务，使用该服务的额度。</p></div>
       <div class="setting-row"><div><h3>内容难度</h3><p>用于生成例句和小故事。</p></div><select data-setting="aiLevel" aria-label="AI 内容难度">${[['A2','A2 · 简单日常'],['B1','B1 · 易读实用'],['B2','B2 · 雅思进阶'],['C1','C1 · 丰富表达']].map(([v,l]) => `<option value="${v}" ${s.aiLevel === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
       <details class="format-help"><summary>接口兼容选项</summary><label class="check-label"><input type="checkbox" data-setting="aiJsonMode" ${s.aiJsonMode ? 'checked' : ''}>强制 JSON 输出</label><p>只在服务商明确支持 JSON mode 时开启。普通问答不受影响。</p></details>
@@ -169,8 +190,9 @@ export function installAI(bridge) {
     const action = button.dataset.action;
     if (action === 'ai-provider') {
       const presets = { openai: ['https://api.openai.com/v1','gpt-4.1-mini'], deepseek: ['https://api.deepseek.com','deepseek-flash'] }; const preset = presets[button.dataset.provider]; if (!preset) return;
-      [state().settings.aiBase, state().settings.aiModel] = preset; bridge.persist(); $('#ai-base').value = preset[0]; $('#ai-model').value = preset[1];
-    } else if (action === 'ai-clear-key') { saveAIKey(''); $('#ai-key').value = ''; bridge.toast('密钥已清除'); }
+      state().settings.aiBase = preset[0]; state().settings.aiModel = ''; models = []; bridge.persist(); $('#ai-base').value = preset[0]; $('#ai-model').innerHTML = '<option value="">请选择模型</option>'; refreshModels();
+    } else if (action === 'ai-model-refresh') await refreshModels();
+    else if (action === 'ai-clear-key') { modelsAbort?.abort(); models = []; saveAIKey(''); $('#ai-key').value = ''; $('#ai-model-status').textContent = '填写密钥后获取模型列表'; bridge.toast('密钥已清除'); }
     else if (action === 'ai-inline-example') await inlineGenerate('example');
     else if (action === 'ai-inline-story') await inlineGenerate('story');
     else if (action === 'ai-inline-cancel') { const context = contextWord(); if (context?.word) inlineJobs.get(`${context.bookId}/${context.word.id}`)?.abort(); }
@@ -194,12 +216,13 @@ export function installAI(bridge) {
   document.addEventListener('change', event => {
     const element = event.target;
     if (element.id === 'ai-remember-key') saveAIKey($('#ai-key').value, element.checked);
+    if (element.id === 'ai-key') refreshModels();
     if (element.id === 'ai-book') { pageAbort?.abort(); bookId = element.value; selected.clear(); renderPage(); }
     if (element.dataset.aiWord) { if (element.checked) { if (selected.size >= 10) { element.checked = false; bridge.toast('一次最多选 10 个词'); return; } selected.add(element.dataset.aiWord); } else selected.delete(element.dataset.aiWord); renderWordPicker(); }
-    if (element.dataset.setting === 'aiBase') { try { completionURL(element.value); } catch (error) { element.value = state().settings.aiBase; bridge.toast(error.message, true); } }
-    if (element.dataset.setting === 'aiEnabled') { if (!element.checked) cancelAll(); navigation(); $('#ai-settings-fields').hidden = !element.checked; }
+    if (element.dataset.setting === 'aiBase') { try { completionURL(element.value); models = []; refreshModels(); } catch (error) { element.value = state().settings.aiBase; bridge.toast(error.message, true); } }
+    if (element.dataset.setting === 'aiEnabled') { if (!element.checked) cancelAll(); else if (readAIKey()) refreshModels(); navigation(); $('#ai-settings-fields').hidden = !element.checked; }
   });
   document.addEventListener('submit', event => { if (event.target.id === 'ai-chat-form') { event.preventDefault(); ask(); } });
   document.addEventListener('keydown', event => { if (event.target.id === 'ai-chat-input' && event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); ask(); } });
-  return { settingsHTML, studyHTML, renderPage, navigation, cancelAll, saveAIKey, onNavigate: () => { pageAbort?.abort(); } };
+  return { settingsHTML, studyHTML, renderPage, navigation, cancelAll, saveAIKey, onNavigate: () => { pageAbort?.abort(); modelsAbort?.abort(); } };
 }

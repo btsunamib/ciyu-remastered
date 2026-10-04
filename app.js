@@ -8,6 +8,7 @@ import { loadState, saveState, parseBackup, backupText, downloadFile } from './s
 import { Pronunciation } from './audio.js';
 import { icon } from './icons.js';
 import { installAI } from './ai-ui.js';
+import { installMaple } from './lap-ui.js';
 import { applyAppearance, appearanceHTML, PALETTES } from './appearance.js';
 
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -16,7 +17,7 @@ const main = $('#main'); const dialog = $('#modal');
 const loaded = loadState(); let state = loaded.state;
 let route = 'library'; let confirmResolve = null; let lastFocused = null; let bookQuery = ''; let saveFailed = false; let inputSave = null; let recoveryRequired = !!loaded.error;
 const wordsStates = new Map();
-let ai;
+let ai, maple;
 const darkQuery = matchMedia('(prefers-color-scheme: dark)');
 const audio = new Pronunciation(() => state.settings, (text, error) => {
   const element = $('#audio-status'); element.textContent = text; element.hidden = !text; element.classList.toggle('error', !!error);
@@ -53,13 +54,14 @@ function navigation() {
   document.querySelectorAll('[data-nav]').forEach(button => button.classList.toggle('active', button.dataset.nav === active));
   const totalDue = state.books.reduce((sum, book) => sum + bookStats(book).due, 0);
   $('#nav-due').textContent = totalDue; $('#nav-due').hidden = !totalDue;
-  const names = { library: '我的词书', review: '记忆复习', settings: '学习设置', ai: 'AI 学习' };
+  const names = { library: '我的词书', review: '记忆复习', settings: '学习设置', ai: 'AI 学习', maple: '枫叶模式' };
   $('#breadcrumb').innerHTML = `我的学习空间 <span>/</span> ${esc(names[active] || '词表')}`;
   document.body.classList.toggle('focus-mode', route.startsWith('practice/') || route.startsWith('result/'));
   ai?.navigation();
 }
 function navigate(next, options = {}) {
   ai?.onNavigate();
+  maple?.onNavigate();
   clearTimeout(inputSave); audio.stop(); route = next;
   const hash = `#${next}`; if (location.hash !== hash) history[options.replace ? 'replaceState' : 'pushState'](null, '', hash);
   render(options);
@@ -73,6 +75,7 @@ function render(options = {}) {
   else if (route === 'settings') renderSettings();
   else if (route === 'review') renderReview();
   else if (route === 'ai') ai.renderPage();
+  else if (route === 'maple') maple.renderPage();
   else renderLibrary();
   decorate(main);
 }
@@ -266,7 +269,7 @@ function renderSettings() {
   main.innerHTML = `<div class="page"><div class="page-intro"><div><h1>找到你的练习节奏。</h1><p>调整一次，每本词书都按你的习惯来。所有题目都手动继续。</p></div></div><div class="settings-grid"><div class="settings-stack">
     ${ai.settingsHTML()}<section class="panel"><div class="panel-head">${icon('book')}<h2>学习节奏</h2></div>${numberSetting('batch', '同时练多少个词', '掌握一个，再补进一个。小组更容易专注。', 5, 30)}${numberSetting('target', '认读连续认识几次算掌握', '不认识会重新计数。听力、口语和写作有各自的规则。', 2, 5)}${numberSetting('gap', '答对后，隔几个词再见', '用于认读、听力、口语，默认隔 7 个其他词。', 1, 30)}${numberSetting('wrongGap', '答错后，隔几个词再练', '忘记的词更快回来，默认隔 3 个其他词。', 1, 8)}<div class="notice" style="margin-top:20px">${icon('info')}写作采用更短间隔：写对隔 2 个词，写错隔 1 个词。任何模式都不会自动跳到下一题。</div></section>
     <section class="panel"><div class="panel-head">${icon('reset')}<h2>回访旧词</h2></div>${toggleSetting('mixOld', '学习中顺便复习旧词', '认读时，穿插以前掌握的词。如果忘了，会重新巩固。')}<div id="mix-options" ${state.settings.mixOld ? '' : 'hidden'}>${numberSetting('mixEvery', '每掌握多少个新词触发', '默认掌握 5 个新词后，回访一次旧词。', 1, 50)}${numberSetting('mixCount', '每次回访几个旧词', '默认随机插入 2 个旧词。', 1, 5)}</div></section>
-    <section class="panel"><div class="panel-head">${icon('shield')}<h2>词书与备份</h2></div><p class="hint" style="margin-bottom:17px">词书、进度和设置都保存在这台设备的浏览器里。导出一份备份，可以在另一台设备接着练。</p><div class="setting-actions"><button class="button primary" data-action="backup">${icon('download')}导出完整备份</button><label class="button" for="backup-file">${icon('upload')}导入备份<input type="file" accept=".json,application/json" id="backup-file" hidden></label><button class="button" data-action="legacy-help">迁移旧版数据</button><button class="button" data-action="clear-audio-cache">清除音频缓存</button><button class="button danger" data-action="clear-data">清除全部数据</button></div><p class="hint" style="margin-top:14px">备份包含词书、四套学习进度、未完成的练习与复习安排。</p></section>
+    <section class="panel"><div class="panel-head">${icon('shield')}<h2>词书与备份</h2></div><p class="hint" style="margin-bottom:17px">词书、进度和设置都保存在这台设备的浏览器里。导出一份备份，可以在另一台设备接着练。</p><div class="setting-actions"><button class="button primary" data-action="backup">${icon('download')}导出完整备份</button><label class="button" for="backup-file">${icon('upload')}导入备份<input type="file" accept=".json,application/json" id="backup-file" hidden></label><button class="button" data-action="legacy-help">迁移旧版数据</button><button class="button" data-action="clear-audio-cache">清除音频缓存</button><button class="button danger" data-action="clear-data">清除全部数据</button></div><p class="hint" style="margin-top:14px">备份包含词书、四套学习进度、AI 素材、LAP 词族与试卷、未完成的练习与复习安排。</p></section>
   </div><div class="settings-stack">
     <section class="panel"><div class="panel-head">${icon('headphones')}<h2>发音与跟读</h2></div><div class="setting-row"><div><h3>英语发音</h3><p>有道音频 · 单词、词组与句子<br>首次播放需要联网。</p></div><select data-setting="accent" aria-label="英语口音"><option value="uk" ${state.settings.accent === 'uk' ? 'selected' : ''}>英式发音</option><option value="us" ${state.settings.accent === 'us' ? 'selected' : ''}>美式发音</option></select></div><div class="setting-row"><div><h3>发音速度</h3><p>慢一点跟读，熟悉后再加快。</p></div><div class="range-row"><input type="range" data-setting="rate" aria-label="发音速度" min="0.6" max="1.3" step="0.05" value="${state.settings.rate}"><output id="rate-value">${state.settings.rate.toFixed(2)}×</output></div></div>${toggleSetting('autoSpeak', '自动播放英文', '认读、听音题和英文回忆题会自动发音。听写题始终先播放。')}${toggleSetting('autoSpeakZh', '自动朗读中文', '揭晓答案时朗读中文释义，使用系统中文声音。')}<div class="setting-row"><div><h3>中文发音人</h3><p>设备可用的中文声音。</p></div><select data-setting="zhVoiceURI" aria-label="中文发音人"><option value="">系统默认</option>${voices.map(voice => `<option value="${esc(voice.voiceURI)}" ${voice.voiceURI === state.settings.zhVoiceURI ? 'selected' : ''}>${esc(voice.name)}</option>`).join('')}</select></div><div class="setting-actions" style="margin-top:18px"><button class="button soft" data-action="test-en">${icon('volume')}试听英文</button><button class="button" data-action="test-zh">${icon('volume')}试听中文</button></div><details class="format-help" style="margin-bottom:0"><summary>使用自己的英语音源</summary><p>填写 HTTPS 音频链接模板，<code>{text}</code> 会替换为英文，<code>{accent}</code> 为英音 1 / 美音 2。留空使用默认音源。</p><input class="input" id="audio-template" data-setting="audioTemplate" aria-label="自定义英语音源" placeholder="https://…?text={text}" value="${esc(state.settings.audioTemplate)}"></details></section>
     <section class="panel"><div class="panel-head">${icon('sun')}<h2>我的学习空间</h2></div><div class="setting-row"><div><h3>页面主题</h3><p>按你的环境，调整明暗。</p></div><select data-setting="theme" aria-label="页面主题">${[['auto','跟随系统'],['light','浅色'],['dark','深色']].map(([value,label]) => `<option value="${value}" ${state.settings.theme === value ? 'selected' : ''}>${label}</option>`).join('')}</select></div>${appearanceHTML(state.settings)}<div class="setting-row"><div><h3>自定义背景</h3><p>选择喜欢的图片，会自动压缩并柔化。</p></div></div><div class="setting-actions" style="margin-top:16px"><label class="button" for="background-file">${icon('upload')}选择图片<input id="background-file" type="file" accept="image/*" hidden></label><button class="button" data-action="clear-background">恢复默认</button></div>${state.settings.background ? `<div class="bg-preview" style="background-image:url('${state.settings.background}')"></div>` : ''}</section>
@@ -389,9 +392,9 @@ async function restoreBackup(file) {
   try {
     if (file.size > 25 * 1024 * 1024) throw new Error('备份超过 25 MB，文件过大');
     const restored = parseBackup(await file.text());
-    const yes = await confirm('导入这份备份？', `这份备份有 ${restored.books.length} 本词书、${restored.books.reduce((sum, b) => sum + b.words.length, 0)} 个词。导入后会替换当前词书、进度和设置；如需保留当前内容，请先取消并导出备份。`, '导入并恢复');
+    const yes = await confirm('导入这份备份？', `这份备份有 ${restored.books.length} 本词书、${restored.books.reduce((sum, b) => sum + b.words.length, 0)} 个词，以及 ${restored.maple.collections.length} 份 LAP 资料。导入后会替换当前词书、进度和设置；如需保留当前内容，请先取消并导出备份。`, '导入并恢复');
     if (!yes) return;
-    state = restored; recoveryRequired = false; wordsStates.clear(); persist(); applyTheme(); navigate('library'); toast('词书与进度已经恢复');
+    ai.cancelAll(); maple.cancelAll(); state = restored; recoveryRequired = false; wordsStates.clear(); persist(); applyTheme(); navigate('library'); toast('词书与进度已经恢复');
   } catch (error) { toast(error.message || '备份读取失败', true); }
 }
 async function uploadBackground(file) {
@@ -467,7 +470,7 @@ document.addEventListener('click', async event => {
       case 'test-en': audio.english('Every small step brings you closer.'); break;
       case 'test-zh': audio.stop(); audio.chinese('慢慢练，每一次回忆都有意义。', true); break;
       case 'clear-background': state.settings.background = null; persist(); applyTheme(); renderSettings(); toast('已恢复默认背景'); break;
-      case 'clear-data': if (await confirm('清除新版的全部数据？', '新版词书、学习进度、复习安排、AI 素材、密钥和设置都会清除。这个操作无法撤销，请先导出备份。旧版数据不会删除。', '清除全部数据', true)) { state = { version: 2, settings: { ...DEFAULT_SETTINGS }, books: [], sessions: {}, history: [], aiMaterials: [], migratedAt: Date.now() }; recoveryRequired = false; wordsStates.clear(); ai.cancelAll(); ai.saveAIKey(''); persist(); applyTheme(); navigate('library'); toast('新版数据已清除'); } break;
+      case 'clear-data': if (await confirm('清除新版的全部数据？', '新版词书、LAP 资料和试卷、学习进度、复习安排、AI 素材、密钥和设置都会清除。这个操作无法撤销，请先导出备份。旧版数据不会删除。', '清除全部数据', true)) { ai.cancelAll(); maple.cancelAll(); state = { version: 2, settings: { ...DEFAULT_SETTINGS }, books: [], sessions: {}, history: [], aiMaterials: [], maple: { collections: [] }, migratedAt: Date.now() }; recoveryRequired = false; wordsStates.clear(); ai.saveAIKey(''); persist(); applyTheme(); navigate('library'); toast('新版数据已清除'); } break;
       case 'legacy-help': legacyHelp(); break;
       case 'copy-legacy': { const text = $('#legacy-snippet').value; try { await navigator.clipboard.writeText(text); toast('代码已复制'); } catch { $('#legacy-snippet').select(); toast('已选中代码，请复制'); } break; }
       case 'exit-session': persist(); navigate('library'); break;
@@ -541,8 +544,8 @@ document.addEventListener('keydown', event => {
   } else if (event.key === ' ') { event.preventDefault(); audio.english(currentItem(session)?.en); }
   else if (session.type !== 'dict' && session.mode !== 'write' && ['1', '2', 'ArrowLeft', 'ArrowRight'].includes(event.key)) { event.preventDefault(); grade(['2', 'ArrowRight'].includes(event.key)); }
 });
-window.addEventListener('popstate', () => { audio.stop(); route = decodeURI(location.hash.slice(1)) || 'library'; render(); });
-window.addEventListener('hashchange', () => { audio.stop(); route = location.hash.slice(1) || 'library'; render(); });
+window.addEventListener('popstate', () => { ai?.onNavigate(); maple?.onNavigate(); audio.stop(); route = decodeURI(location.hash.slice(1)) || 'library'; render(); });
+window.addEventListener('hashchange', () => { ai?.onNavigate(); maple?.onNavigate(); audio.stop(); route = location.hash.slice(1) || 'library'; render(); });
 window.addEventListener('pagehide', persist);
 document.addEventListener('visibilitychange', () => { if (document.hidden) { audio.stop(); persist(); } else if (route === 'review' || route === 'library') render(); });
 darkQuery.addEventListener('change', () => { if (state.settings.theme === 'auto') applyTheme(); });
@@ -550,6 +553,7 @@ window.addEventListener('storage', event => { if (event.key === STORAGE_KEY) toa
 ai = installAI({ getState: () => state, main, persist, toast, navigate, openModal, closeModal, audio,
   getStudyContext: () => { const session = activeSession(), item = currentItem(session); return session && item ? { session, item } : null; }
 });
+maple = installMaple({ getState: () => state, main, persist, toast, navigate, openModal, closeModal, confirm, audio });
 document.addEventListener('selectstart', event => { if (!state.settings.uiSelection && !event.target.closest('input,textarea,[contenteditable="true"]')) event.preventDefault(); });
 applyTheme(); decorate();
 route = location.hash.slice(1) || 'library'; render();

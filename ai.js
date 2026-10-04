@@ -19,10 +19,39 @@ export function completionURL(base) {
   url.pathname = path.endsWith('/chat/completions') ? path : `${path}/chat/completions`;
   return url.href;
 }
+export function modelsURL(base) {
+  const url = new URL(completionURL(base));
+  url.pathname = url.pathname.replace(/\/chat\/completions$/, '/models');
+  return url.href;
+}
+export async function fetchModels(settings, signal) {
+  const key = readAIKey();
+  if (!settings.aiEnabled || !key) throw new Error('先开启 AI 并填写 API 密钥，再获取模型列表');
+  const controller = new AbortController();
+  const cancel = () => controller.abort();
+  signal?.addEventListener('abort', cancel, { once: true });
+  if (signal?.aborted) controller.abort();
+  let timedOut = false;
+  const timer = setTimeout(() => { timedOut = true; controller.abort(); }, 20000);
+  try {
+    const response = await fetch(modelsURL(settings.aiBase), { headers: { Authorization: `Bearer ${key}` }, signal: controller.signal, credentials: 'omit', redirect: 'error', cache: 'no-store' });
+    if (!response.ok) throw new Error(response.status === 401 ? '密钥无效，请检查后重新获取模型' : `无法获取模型列表（${response.status}），请确认服务支持 GET /models`);
+    const data = await response.json();
+    const list = Array.isArray(data.data) ? data.data : Array.isArray(data.models) ? data.models : [];
+    const ids = [...new Set(list.map(m => typeof m === 'string' ? m : m?.id).filter(id => typeof id === 'string' && id.trim() && id.length <= 160).map(id => id.trim()))].sort();
+    if (!ids.length) throw new Error('服务没有返回可选模型，请检查 API 地址和密钥权限');
+    return ids;
+  } catch (error) {
+    if (timedOut) throw new Error('获取模型列表超时，请重试');
+    if (controller.signal.aborted) throw new DOMException('已取消', 'AbortError');
+    if (error instanceof TypeError) throw new Error('无法获取模型：请检查网络以及服务的 CORS 设置');
+    throw error;
+  } finally { clearTimeout(timer); signal?.removeEventListener('abort', cancel); }
+}
 export async function requestAI(settings, messages, { signal, json = false } = {}) {
   if (!settings.aiEnabled) throw new Error('先在设置中打开 AI 学习助手');
   const key = readAIKey(); if (!key) throw new Error('先在设置中填写 API 密钥');
-  if (!settings.aiModel?.trim()) throw new Error('先填写模型名称');
+  if (!settings.aiModel?.trim()) throw new Error('先在设置中获取模型列表并选择模型');
   const controller = new AbortController(); let timedOut = false;
   const cancel = () => controller.abort(); signal?.addEventListener('abort', cancel, { once: true });
   if (signal?.aborted) controller.abort();
@@ -35,7 +64,7 @@ export async function requestAI(settings, messages, { signal, json = false } = {
       body: JSON.stringify(body), signal: controller.signal, credentials: 'omit', redirect: 'error'
     });
     if (!response.ok) {
-      const reasons = { 401: '密钥无效或已过期，请检查设置', 403: '接口拒绝了请求，请检查密钥权限和服务地址', 404: '找不到接口或模型，请检查地址和模型名称', 413: '发送的内容太长，请减少文档内容', 429: '请求过多或余额不足，请稍后再试' };
+      const reasons = { 400: '服务不支持本次请求格式，请检查模型能力；图片识别需选择支持视觉输入的模型', 401: '密钥无效或已过期，请检查设置', 403: '接口拒绝了请求，请检查密钥权限和服务地址', 404: '找不到接口或模型，请检查地址和选择的模型', 413: '发送的内容太长，请减少文档内容', 429: '请求过多或余额不足，请稍后再试' };
       throw new Error(reasons[response.status] || `AI 服务暂时没有完成请求（${response.status}）`);
     }
     let data; try { data = await response.json(); } catch { throw new Error('接口没有返回 JSON，请使用兼容 Chat Completions 的接口'); }

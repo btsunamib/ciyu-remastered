@@ -1,3 +1,5 @@
+import { normalizeMaple } from './lap-core.js';
+
 export const STORAGE_KEY = 'ciyu.remastered.v2';
 export const LEGACY_KEY = 'ciyu.vocab.v1';
 export const MODE_INFO = {
@@ -27,7 +29,7 @@ export function shuffle(list, random = Math.random) {
   for (let i = result.length - 1; i > 0; i--) { const j = Math.floor(random() * (i + 1)); [result[i], result[j]] = [result[j], result[i]]; }
   return result;
 }
-export const freshState = () => ({ version: 2, settings: { ...DEFAULT_SETTINGS }, books: [], sessions: {}, history: [], aiMaterials: [], migratedAt: null });
+export const freshState = () => ({ version: 2, settings: { ...DEFAULT_SETTINGS }, books: [], sessions: {}, history: [], aiMaterials: [], maple: { collections: [] }, migratedAt: null });
 export const sessionKey = (bookId, mode) => `${bookId}:${mode}`;
 export const bookById = (state, id) => state.books.find(book => book.id === id);
 export const wordById = (state, bookId, id) => bookById(state, bookId)?.words.find(word => word.id === id);
@@ -41,7 +43,7 @@ export function sanitizeSettings(input = {}) {
   for (const key of ['uiAccent', 'uiBackground', 'uiSurface', 'uiText']) if (/^#[0-9a-f]{6}$/i.test(input[key] || '')) result[key] = input[key];
   for (const [key, choices] of [['uiPalette', ['iris', 'forest', 'sand', 'rose', 'ocean', 'grape']], ['uiFont', ['sans', 'serif', 'rounded']], ['uiLayout', ['sidebar', 'top']], ['uiDensity', ['comfortable', 'compact']], ['aiLevel', ['A2', 'B1', 'B2', 'C1']]]) if (choices.includes(input[key])) result[key] = input[key];
   if (typeof input.aiBase === 'string' && input.aiBase.length < 500) { try { const url = new URL(input.aiBase); if (url.protocol === 'https:' && !url.username && !url.password && !url.search && !url.hash) result.aiBase = url.href.replace(/\/$/, ''); } catch {} }
-  if (typeof input.aiModel === 'string' && input.aiModel.trim()) result.aiModel = input.aiModel.trim().slice(0, 160);
+  if (typeof input.aiModel === 'string') result.aiModel = input.aiModel.trim().slice(0, 160);
   result.rate = Math.min(1.3, Math.max(0.6, Number(input.rate) || 0.95));
   result.accent = input.accent === 'us' ? 'us' : 'uk';
   result.theme = ['auto', 'light', 'dark'].includes(input.theme) ? input.theme : 'auto';
@@ -99,6 +101,7 @@ export function normalizeState(input) {
     title: String(m.title || '').slice(0, 200), text: m.text.slice(0, 14000), translation: String(m.translation || '').slice(0, 14000),
     note: String(m.note || '').slice(0, 4000), words: Array.isArray(m.words) ? m.words.filter(w => typeof w === 'string').slice(0, 12) : [], createdAt: Number(m.createdAt) || Date.now()
   })) : [];
+  state.maple = normalizeMaple(input.maple);
   state.migratedAt = input.migratedAt || null;
   return state;
 }
