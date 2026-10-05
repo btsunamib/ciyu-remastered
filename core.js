@@ -15,7 +15,7 @@ export const DEFAULT_SETTINGS = {
   batch: 12, gap: 7, wrongGap: 3, target: 3, mixOld: false, mixEvery: 5, mixCount: 2,
   autoSpeak: true, autoSpeakZh: true, rate: 0.95, accent: 'uk', zhVoiceURI: '', audioTemplate: '',
   theme: 'auto', background: null,
-  aiEnabled: false, aiBase: 'https://api.openai.com/v1', aiModel: 'gpt-4.1-mini', aiLevel: 'B1', aiJsonMode: false,
+  aiEnabled: false, aiBase: 'https://api.openai.com/v1', aiModel: 'gpt-4.1-mini', aiLevel: 'B1', aiJsonMode: false, aiStream: false, aiThinking: 'auto', aiThinkingFormat: 'auto', dailyGoal: 20,
   uiPalette: 'iris', uiCustom: false, uiAccent: '#5666eb', uiBackground: '#f7f8fc', uiSurface: '#ffffff', uiText: '#252b43',
   uiFont: 'sans', uiScale: 100, uiRadius: 20, uiCardWidth: 580, uiLayout: 'sidebar', uiDensity: 'comfortable', uiMotion: true, uiSelection: false
 };
@@ -29,19 +29,19 @@ export function shuffle(list, random = Math.random) {
   for (let i = result.length - 1; i > 0; i--) { const j = Math.floor(random() * (i + 1)); [result[i], result[j]] = [result[j], result[i]]; }
   return result;
 }
-export const freshState = () => ({ version: 2, settings: { ...DEFAULT_SETTINGS }, books: [], sessions: {}, history: [], aiMaterials: [], maple: { collections: [] }, migratedAt: null });
+export const freshState = () => ({ version: 2, settings: { ...DEFAULT_SETTINGS }, books: [], sessions: {}, history: [], study: {}, aiMaterials: [], maple: { collections: [] }, migratedAt: null });
 export const sessionKey = (bookId, mode) => `${bookId}:${mode}`;
 export const bookById = (state, id) => state.books.find(book => book.id === id);
 export const wordById = (state, bookId, id) => bookById(state, bookId)?.words.find(word => word.id === id);
 export function sanitizeSettings(input = {}) {
   const result = { ...DEFAULT_SETTINGS };
-  for (const [key, min, max] of [['batch', 5, 30], ['gap', 1, 30], ['wrongGap', 1, 8], ['target', 2, 5], ['mixEvery', 1, 50], ['mixCount', 1, 5]]) {
+  for (const [key, min, max] of [['dailyGoal', 1, 1000], ['batch', 5, 30], ['gap', 1, 30], ['wrongGap', 1, 8], ['target', 2, 5], ['mixEvery', 1, 50], ['mixCount', 1, 5]]) {
     result[key] = Math.min(max, Math.max(min, Math.round(Number(input[key]) || result[key])));
   }
-  for (const key of ['mixOld', 'autoSpeak', 'autoSpeakZh', 'aiEnabled', 'aiJsonMode', 'uiCustom', 'uiMotion', 'uiSelection']) if (typeof input[key] === 'boolean') result[key] = input[key];
+  for (const key of ['mixOld', 'autoSpeak', 'autoSpeakZh', 'aiEnabled', 'aiJsonMode', 'aiStream', 'uiCustom', 'uiMotion', 'uiSelection']) if (typeof input[key] === 'boolean') result[key] = input[key];
   for (const [key, min, max] of [['uiScale', 85, 125], ['uiRadius', 4, 32], ['uiCardWidth', 360, 820]]) result[key] = Math.min(max, Math.max(min, Number(input[key]) || result[key]));
   for (const key of ['uiAccent', 'uiBackground', 'uiSurface', 'uiText']) if (/^#[0-9a-f]{6}$/i.test(input[key] || '')) result[key] = input[key];
-  for (const [key, choices] of [['uiPalette', ['iris', 'forest', 'sand', 'rose', 'ocean', 'grape']], ['uiFont', ['sans', 'serif', 'rounded']], ['uiLayout', ['sidebar', 'top']], ['uiDensity', ['comfortable', 'compact']], ['aiLevel', ['A2', 'B1', 'B2', 'C1']]]) if (choices.includes(input[key])) result[key] = input[key];
+  for (const [key, choices] of [['aiThinking', ['auto','on','off']], ['aiThinkingFormat',['auto','thinking','enable_thinking','reasoning_effort']], ['uiPalette', ['iris', 'forest', 'sand', 'rose', 'ocean', 'grape']], ['uiFont', ['sans', 'serif', 'rounded']], ['uiLayout', ['sidebar', 'top']], ['uiDensity', ['comfortable', 'compact']], ['aiLevel', ['A2', 'B1', 'B2', 'C1']]]) if (choices.includes(input[key])) result[key] = input[key];
   if (typeof input.aiBase === 'string' && input.aiBase.length < 500) { try { const url = new URL(input.aiBase); if (url.protocol === 'https:' && !url.username && !url.password && !url.search && !url.hash) result.aiBase = url.href.replace(/\/$/, ''); } catch {} }
   if (typeof input.aiModel === 'string') result.aiModel = input.aiModel.trim().slice(0, 160);
   result.rate = Math.min(1.3, Math.max(0.6, Number(input.rate) || 0.95));
@@ -102,6 +102,7 @@ export function normalizeState(input) {
     note: String(m.note || '').slice(0, 4000), words: Array.isArray(m.words) ? m.words.filter(w => typeof w === 'string').slice(0, 12) : [], createdAt: Number(m.createdAt) || Date.now()
   })) : [];
   state.maple = normalizeMaple(input.maple);
+  for (const [word, record] of Object.entries(input.study || {})) if (record && Number.isFinite(record.firstAt) && Number.isFinite(record.lastAt)) state.study[normWord(word)] = { firstAt: record.firstAt, lastAt: record.lastAt };
   state.migratedAt = input.migratedAt || null;
   return state;
 }
@@ -244,6 +245,7 @@ export function gradeAnswer(state, session, answer, now = Date.now()) {
   const typed = session.mode === 'write' || session.type === 'dict';
   if (typed && !String(answer || '').trim()) return null;
   const correct = typed ? spellingMatches(item, answer, session.mode === 'write') : !!answer;
+  for (const en of item.ens || [item.en]) recordStudy(state, en, now);
   const savedWordFlags = item.wordIds.map(id => {
     const word = wordById(state, item.bookId, id); return { id, mastered: word?.mastered, review: clone(word?.review || null) };
   });
@@ -402,3 +404,16 @@ preserve | /prɪˈzɜːv/ | 保留；保护
 resilience | /rɪˈzɪliəns/ | 韧性；恢复力
 keep track of | 了解动态；跟踪
 timely practical support | 及时的实际支持`;
+
+export function recordStudy(state, word, now = Date.now()) {
+  const key = normWord(word); if (!key) return;
+  state.study ||= {}; const previous = state.study[key];
+  state.study[key] = { firstAt: previous?.firstAt ?? now, lastAt: now };
+}
+export function studyStats(state, now = Date.now()) {
+  const date = value => { const d = new Date(value); return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`; };
+  const today = date(now), records = state.study || {}, learned = new Set(Object.keys(records));
+  for (const book of state.books) for (const word of book.words) if (word.mastered || word.listenMastered || word.speakMastered || word.writeMastered || word.review?.lastAt) learned.add(normWord(word.en));
+  for (const c of state.maple?.collections || []) for (const e of c.entries) if (Object.values(e.progress).some(p => p.stage || p.streak)) learned.add(normWord(e.word));
+  return { total: learned.size, today: Object.values(records).filter(r => date(r.lastAt) === today).length, goal: state.settings.dailyGoal || 20 };
+}

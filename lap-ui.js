@@ -1,4 +1,4 @@
-import { uid } from './core.js';
+import { uid, recordStudy } from './core.js';
 import { readAIKey } from './ai.js';
 import { POS, SKILLS, DEFAULT_EXAM, availablePOS, normalizeEntries, parseLAPJSON, createPaper, checkForms, spelling, updateProgress, startPractice } from './lap-core.js';
 import { readLAPFiles, extractLAP, generateCorrections, gradePaper, gradeMeaning } from './lap-ai.js';
@@ -6,12 +6,21 @@ import { icon } from './icons.js';
 
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const $ = selector => document.querySelector(selector);
-const SECTIONS = { forms: '一 · 听音写出全部词性形式', meanings: '二 · 写出词义', sentences: '三 · 按指定词性造句', corrections: '四 · 句子改错' };
+const EN_POS = { noun:'Noun', verb:'Verb', pastTense:'Past tense', adjective:'Adjective', adverb:'Adverb', pronoun:'Pronoun', preposition:'Preposition', conjunction:'Conjunction', determiner:'Determiner', interjection:'Interjection', numeral:'Numeral' };
+const practicePOS = e => availablePOS(e).filter(p => p !== 'pastTense');
+const SECTIONS = { forms: '1. Listen and complete the word forms', meanings: '2. Explain the meaning', sentences: '3. Write a sentence', corrections: '4. Correct the sentence' };
 export function installMaple(bridge) {
   const state = () => bridge.getState();
   const collections = () => { state().maple ||= { collections: [] }; return state().maple.collections; };
   let selectedId = '', view = 'words', job = null, importing = null, query = '', page = 0;
-  let playToken = 0, playTimer;
+  let playToken = 0, playTimer, immersive = false;
+  async function setImmersive(value) {
+    immersive = value; document.body.classList.toggle('lap-immersive', value);
+    renderPage();
+    try { if (value && !document.fullscreenElement) await document.documentElement.requestFullscreen?.(); else if (!value && document.fullscreenElement) await document.exitFullscreen(); } catch {}
+    if (value) window.scrollTo({top:0,behavior:'instant'});
+  }
+  document.addEventListener('fullscreenchange', () => { if (!document.fullscreenElement && immersive) { immersive = false; document.body.classList.remove('lap-immersive'); if (isPage()) renderPage(); } });
   const collection = () => collections().find(c => c.id === selectedId) || collections()[0];
   const paper = () => collection()?.papers.find(p => p.id === collection().activePaperId);
   const isPage = () => location.hash === '#maple';
@@ -32,8 +41,12 @@ export function installMaple(bridge) {
   }
   const formText = (entry, pos) => (entry.forms[pos] || []).map(f => f.text).join(' / ');
   const columns = c => [...new Set(c.entries.flatMap(availablePOS))];
-  function cells(entry, cols, answer, dataset, disabled = false) {
-    return cols.map(pos => entry.forms[pos]?.length ? `<td><input class="input" ${dataset} data-pos="${pos}" value="${esc(answer?.[pos] || '')}" aria-label="${esc(POS[pos])}形式" autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="2000" ${disabled ? 'disabled' : ''}></td>` : `<td class="lap-slash" aria-label="${esc(POS[pos])}无对应形式，不能作答">／</td>`).join('');
+  function fieldHTML(entry, pos, answer, dataset, locked = false, check = null) {
+    const status = check ? check.correct ? 'correct' : 'wrong' : '';
+    return `<div class="lap-answer-cell ${status}" ${check && !check.correct ? 'tabindex="0" data-action="lap-answer-toggle" role="button" aria-label="Show correct answer"' : ''}><input class="input" ${dataset} data-pos="${pos}" value="${esc(answer?.[pos] || '')}" aria-label="${esc(EN_POS[pos])}" ${check ? `aria-invalid="${!check.correct}"` : ''} autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="2000" ${locked ? 'readonly' : ''}>${check ? `<span class="lap-cell-status">${check.correct ? '✓' : '✗'}</span>${!check.correct ? `<span class="lap-correct-answer" role="status">Correct: ${esc(check.expected)}</span>` : ''}` : ''}</div>`;
+  }
+  function cells(entry, cols, answer, dataset, locked = false, checks = []) {
+    return cols.map(pos => entry.forms[pos]?.length ? `<td data-label="${esc(EN_POS[pos])}">${fieldHTML(entry, pos, answer, dataset, locked, checks.find(c => c.pos === pos))}</td>` : `<td data-label="${esc(EN_POS[pos])}" class="lap-slash" aria-label="No ${esc(EN_POS[pos])} form">／</td>`).join('');
   }
   function renderWords(c) {
     const filtered = c.entries.filter(e => `${e.word} ${e.meaning} ${Object.values(e.forms).flat().map(f => f.text).join(' ')}`.toLowerCase().includes(query.toLowerCase()));
@@ -44,27 +57,27 @@ export function installMaple(bridge) {
     return `<div class="lap-table-wrap"><table class="lap-table"><thead><tr><th scope="col">词族 / 含义</th>${cols.map(pos => `<th scope="col">${POS[pos]}</th>`).join('')}<th scope="col">学习进度</th></tr></thead><tbody>${filtered.slice(page * 40, page * 40 + 40).map(e => `<tr><th scope="row"><button class="text-button" data-action="lap-audio" data-entry="${esc(e.id)}">${icon('volume')}${esc(e.word)}</button><small>${esc(e.meaning)}</small>${e.note ? `<small>${esc(e.note)}</small>` : ''}</th>${cols.map(pos => e.forms[pos]?.length ? `<td>${e.forms[pos].map(f => `<span class="lap-form">${esc(f.text)}${f.meaning ? `<small>${esc(f.meaning)}</small>` : ''}</span>`).join('')}</td>` : '<td class="lap-slash" aria-label="无对应形式">／</td>').join('')}<td>${Object.entries(SKILLS).map(([skill, label]) => `<small>${label} · ${e.progress[skill].stage ? e.progress[skill].dueAt <= Date.now() ? '待复习' : '已练习' : '待学习'}</small>`).join('')}</td></tr>`).join('') || `<tr><td colspan="${cols.length + 2}">没有找到词族。</td></tr>`}</tbody></table></div>`;
   }
   function renderPractice(c) {
-    const session = c.practice, task = session?.queue[0], entry = c.entries.find(e => e.id === task?.entryId);
-    if (!entry) return `<section class="panel lap-practice"><h2>${session ? '这一组练习完成了' : '把一个词族，练到会用。'}</h2><p>听音拼写、写全词性转换、用自己的话回忆词义。三项分别记录，答错的项目会再次出现；答对后按 1、3、7、15、30 天复习。</p><div class="lap-actions"><button class="button primary" data-action="lap-practice-start">学习 / 复习到期词</button><button class="button" data-action="lap-practice-all">练习全部词族</button></div></section>`;
-    const feedback = session.feedback;
-    return `<section class="panel lap-practice"><div class="section-head"><h2>${SKILLS[task.skill]}</h2><span class="hint">已完成 ${session.completed} 项 · 还有 ${session.queue.length} 项</span></div>${task.skill === 'spelling' ? `<p>听发音，写出这个单词。</p><button class="button soft" data-action="lap-practice-audio">${icon('volume')}播放两遍</button>` : `<div class="lap-study-word">${esc(entry.word)}</div>${task.skill === 'forms' ? `<p class="hint">${esc(entry.meaning)} · 写全资料里的词形。同格多个形式用 / 分隔。</p>` : '<p>用中文或英文解释含义，不要在解释中包含目标词或本词族的词形。</p>'}`}
-      <form id="lap-practice-form">${task.skill === 'forms' ? `<div class="lap-table-wrap"><table class="lap-table"><thead><tr>${columns(c).map(pos => `<th>${POS[pos]}</th>`).join('')}</tr></thead><tbody><tr>${cells(entry, columns(c), session.answer, 'data-lap-practice', !!feedback || !!job)}</tr></tbody></table></div>` : task.skill === 'meaning' ? `<div class="lap-config-grid">${availablePOS(entry).map(pos => `<div class="field"><label>${POS[pos]} · ${esc(formText(entry,pos))}<textarea class="textarea" data-lap-practice data-pos="${pos}" maxlength="2000" placeholder="用自己的话解释这一格词形的含义" ${feedback || job ? 'disabled' : ''}>${esc(session.answer?.[pos] || '')}</textarea></label></div>`).join('')}</div>` : `<label class="label" for="lap-practice-answer">英文拼写</label><textarea class="textarea" id="lap-practice-answer" maxlength="4000" autocomplete="off" autocapitalize="none" spellcheck="false" ${feedback || job ? 'disabled' : ''}>${esc(session.answer)}</textarea>`}
-      ${feedback ? `<div class="lap-feedback ${feedback.correct ? 'correct' : 'wrong'}" role="status"><b>${feedback.correct ? '记住了' : '再巩固一次'}</b><p>${esc(feedback.text)}</p>${Object.values(entry.forms).flat().some(f => f.meaning) ? `<p>${Object.entries(entry.forms).map(([pos, forms]) => `${POS[pos]}：${forms.map(f => `${f.text}${f.meaning ? `（${f.meaning}）` : ''}`).join(' / ')}`).map(esc).join('<br>')}</p>` : ''}</div><button class="button primary" type="button" data-action="lap-practice-next">确认，继续${icon('arrow')}</button>` : `<div class="lap-actions"><button class="button primary" type="submit" ${job ? 'disabled' : ''}>${task.skill === 'meaning' ? 'AI 检查词义' : '检查答案'}</button><button class="button" type="button" data-action="lap-practice-reveal" ${job ? 'disabled' : ''}>想不起来，查看答案</button></div>`}</form></section>`;
+    const session = c.practice;
+    if (session && session.queue.some(t => t.skill !== 'forms')) { session.queue = session.queue.filter(t => t.skill === 'forms'); session.answer = {}; session.feedback = null; bridge.persist(); }
+    const task = session?.queue[0], entry = c.entries.find(e => e.id === task?.entryId);
+    if (!entry) return `<section class="panel lap-practice"><h2>${session ? '这一组练习完成了' : '把词性转换，练到熟悉。'}</h2><p>只填写词性形式，不考过去式。同格多个形式用 / 分隔；Enter 跳到下一格，最后一格 Enter 检查答案。</p><div class="lap-actions"><button class="button primary" data-action="lap-practice-start">学习 / 复习到期词</button><button class="button" data-action="lap-practice-all">练习全部词族</button></div></section>`;
+    const feedback = session.feedback, cols = practicePOS(entry);
+    const checks = feedback ? checkForms(entry, session.answer, cols) : [];
+    return `<section class="panel lap-practice"><div class="section-head"><h2>词性转换</h2><span class="hint">已完成 ${session.completed} 项 · 还有 ${session.queue.length} 项</span></div><div class="lap-study-word">${esc(entry.word)}</div><p class="hint">${esc(entry.meaning)} · 同格多个形式用 / 分隔。Enter 下一格，最后一格提交。</p><form id="lap-practice-form"><div class="lap-practice-fields">${cols.map(pos => `<label class="field"><span>${POS[pos]}</span>${fieldHTML(entry,pos,session.answer,'data-lap-practice',!!feedback || !!job, checks.find(c => c.pos === pos))}</label>`).join('')}</div>${feedback ? `<p class="hint" role="status">${feedback.correct ? '全部正确。' : '红框为错误，悬停、点击或用 Tab 聚焦查看绿色正确答案。'}</p><button class="button primary" type="button" data-action="lap-practice-next">确认，继续 ↵</button>` : `<div class="lap-actions"><button class="button primary" type="submit" ${job ? 'disabled' : ''}>检查答案 ↵</button><button class="button" type="button" data-action="lap-practice-reveal">查看答案</button></div>`}</form></section>`;
   }
   function examSetup(c) {
     const config = c.examConfig || DEFAULT_EXAM;
-    return `<section class="panel"><h2>生成 LAP 模拟卷</h2><p class="hint">默认四类题各 3 题。听写每个可填写词性格 1 分，词义、造句、改错每题 2 分。缺少的形式划斜线，不能填写。禁止重复按整个词族计算。</p><form id="lap-exam-form"><div class="lap-config-grid">${Object.entries(SECTIONS).map(([key,label]) => `<div class="field"><label for="lap-count-${key}">${label}</label><input class="input" type="number" min="0" max="20" step="1" id="lap-count-${key}" data-lap-count="${key}" value="${config[key]}" required></div>`).join('')}</div><label class="check-label"><input id="lap-repeat" type="checkbox" ${config.repeatWords ? 'checked' : ''}>允许同一词族在卷内重复（优先选择未出现过的词族）</label><p class="hint">共有 ${c.entries.length} 个词族，其中 ${c.entries.filter(e => availablePOS(e).length >= 3).length} 个可出听写转换题。可将不需要的题型设为 0。</p><button class="button primary" type="submit" ${job ? 'disabled' : ''}>AI 生成并开始考试${icon('arrow')}</button></form></section>`;
+    return `<section class="panel"><h2>生成 LAP 模拟卷</h2><p class="hint">默认四类题各 3 题。听写每个可填写词性格 1 分，词义、造句、改错每题 2 分。缺少的形式划斜线，不能填写。禁止重复按整个词族计算。</p><form id="lap-exam-form"><div class="lap-config-grid">${Object.entries(SECTIONS).map(([key,label]) => `<div class="field"><label for="lap-count-${key}">${label}</label><input class="input" type="number" min="0" max="20" step="1" id="lap-count-${key}" data-lap-count="${key}" value="${config[key]}" required></div>`).join('')}</div><label class="check-label"><input id="lap-repeat" type="checkbox" ${config.repeatWords ? 'checked' : ''}>允许同一词族在卷内重复（优先选择未出现过的词族）</label><p class="hint">共有 ${c.entries.length} 个词族，其中 ${c.entries.filter(e => availablePOS(e).length >= 3).length} 个可出听写转换题。可将不需要的题型设为 0。</p><label class="check-label"><input id="lap-immersive-start" type="checkbox">全屏沉浸式考试</label><button class="button primary" type="submit" ${job ? 'disabled' : ''}>AI 生成并开始考试${icon('arrow')}</button></form></section>`;
   }
   function renderPaper(p) {
     const result = p.result;
-    return `<section class="panel lap-paper"><div class="section-head"><div><h2>${esc(p.name)} · LAP 模拟卷</h2><p class="hint">${new Date(p.createdAt).toLocaleString('zh-CN')} · ${p.config.repeatWords ? '允许重复词族' : '词族不重复'} · 作答自动保存</p></div><button class="button compact" data-action="lap-print">打印试卷</button></div>${result ? `<div class="lap-score" role="status">${result.score} <small>/ ${result.maxScore} 分</small></div><p class="hint">AI 批改结果可查看逐题理由与参考答案。</p>` : '<p class="hint">听写开始时每词播放两遍，也可点击按钮重听。词义不能含目标词；造句要通过具体情境展现词义。改错请写完整的正确句子。</p>'}
+    return `<section class="panel lap-paper" lang="en"><div class="section-head"><div><h2>${esc(p.name)} · LAP Mock Exam</h2><p class="hint">${new Date(p.createdAt).toLocaleString('en-GB')} · Answers saved automatically</p></div><div class="lap-actions"><button class="button compact" data-action="lap-immersive">${immersive ? 'Exit fullscreen' : 'Immersive fullscreen'}</button><button class="button compact" data-action="lap-print">Print</button></div></div>${result ? `<div class="lap-score" role="status">${result.score} <small>/ ${result.maxScore}</small></div>` : '<p class="hint">Listen to each word twice. Explain meanings without using the target word. Use the given word class in a meaningful sentence. Enter moves to the next answer; Shift+Enter adds a new line. Enter in the last answer submits the paper.</p>'}
     ${Object.entries(SECTIONS).map(([section,label]) => {
       const questions = p.questions.filter(q => q.section === section); if (!questions.length) return '';
-      return `<div class="lap-exam-section"><h3>${label} <small>共 ${questions.reduce((s,q) => s + q.maxScore, 0)} 分</small></h3>${section === 'forms' ? `<div class="lap-actions"><button class="button soft" data-action="lap-play-all">${icon('volume')}依次播放，每词两遍</button><button class="button compact" data-action="lap-stop-audio">停止播放</button></div><p class="hint">同格多个词形用 / 分隔；每个词性格需写全，全部正确得 1 分。</p>` : ''}
-      ${questions.map((q,n) => `<article class="lap-question"><div class="lap-question-title"><b>${n + 1}. ${section === 'forms' ? `听写词 ${n + 1}` : section === 'corrections' ? esc(q.sentence) : `${esc(q.target.text)}${section === 'sentences' ? `（${POS[q.pos]}）` : ''}`}</b><span class="hint">${q.maxScore} 分</span></div>
-      ${section === 'forms' ? `<button class="button compact" data-action="lap-question-audio" data-question="${esc(q.id)}">${icon('volume')}播放两遍</button><div class="lap-table-wrap"><table class="lap-table"><thead><tr>${p.columns.map(pos => `<th scope="col">${POS[pos]}</th>`).join('')}</tr></thead><tbody><tr>${cells(q.entry, p.columns, q.answer, `data-lap-answer="${esc(q.id)}"`, !!result || !!job)}</tr></tbody></table></div>` : `<label class="label" for="lap-answer-${esc(q.id)}">${section === 'meanings' ? '释义' : section === 'sentences' ? '我的句子' : '改正后的完整句子'}</label><textarea class="textarea" id="lap-answer-${esc(q.id)}" data-lap-answer="${esc(q.id)}" maxlength="4000" ${result || job ? 'disabled' : ''}>${esc(q.answer)}</textarea>`}
-      ${result ? gradeHTML(result.grades.find(g => g.id === q.id), q) : ''}</article>`).join('')}</div>`;
-    }).join('')}${!result ? `<div class="lap-actions"><button class="button primary" data-action="lap-grade" ${job ? 'disabled' : ''}>交卷，AI 批改</button><span class="hint">空白答案按 0 分处理。提交后本卷锁定作答。</span></div>` : ''}</section>`;
+      const heading = `<h3>${label} <small>${questions.reduce((s,q) => s + q.maxScore,0)} marks</small></h3>`;
+      if (section === 'forms') return `<div class="lap-exam-section">${heading}<div class="lap-actions"><button class="button soft" data-action="lap-play-all">Play all twice</button><button class="button compact" data-action="lap-stop-audio">Stop</button></div><p class="hint">Write every form listed for each word class. Separate multiple forms with /. Each correct cell earns one mark.</p><div class="lap-table-wrap lap-exam-table-wrap"><table class="lap-table lap-exam-table"><thead><tr><th>Word</th>${p.columns.map(pos => `<th>${EN_POS[pos]}</th>`).join('')}</tr></thead><tbody>${questions.map((q,n) => `<tr><th scope="row"><span>Word ${n+1}</span><button class="button compact" data-action="lap-question-audio" data-question="${esc(q.id)}">Play twice</button>${result ? `<small>${esc(q.entry.word)}</small>` : ''}</th>${cells(q.entry,p.columns,q.answer,`data-lap-answer="${esc(q.id)}"`,!!result || !!job,result ? checkForms(q.entry,q.answer) : [])}</tr>`).join('')}</tbody></table></div></div>`;
+      return `<div class="lap-exam-section">${heading}${questions.map((q,n) => `<article class="lap-question"><div class="lap-question-title"><b>${n+1}. ${section === 'corrections' ? esc(q.sentence) : `${esc(q.target.text)}${section === 'sentences' ? ` (${EN_POS[q.pos]})` : ''}`}</b><span class="hint">${q.maxScore} marks</span></div><label class="label" for="lap-answer-${esc(q.id)}">${section === 'meanings' ? 'Meaning (English or Chinese)' : section === 'sentences' ? 'Your sentence' : 'The corrected sentence'}</label><textarea class="textarea" id="lap-answer-${esc(q.id)}" data-lap-answer="${esc(q.id)}" maxlength="4000" ${result || job ? 'readonly' : ''}>${esc(q.answer)}</textarea>${result ? gradeHTML(result.grades.find(g=>g.id===q.id),q) : ''}</article>`).join('')}</div>`;
+    }).join('')}${!result ? `<div class="lap-actions"><button class="button primary" data-action="lap-grade" ${job ? 'disabled' : ''}>Submit paper ↵</button><span class="hint">Blank answers earn zero marks. Submitted papers are locked.</span></div>` : ''}</section>`;
   }
   function gradeHTML(g, q) {
     if (!g) return '';
@@ -76,17 +89,20 @@ export function installMaple(bridge) {
   }
   function renderPage() {
     const c = collection(); if (c) selectedId = c.id;
+    document.body.classList.toggle('lap-practicing', view === 'practice' && !!c?.practice?.queue.length);
     bridge.main.innerHTML = `<div class="page maple-page"><div class="page-intro"><div><div class="eyebrow">MAPLE LEARNING</div><h1><span aria-hidden="true">🍁</span> 枫叶模式</h1><p>从一张词表，到会拼写、会转换、会表达。</p></div><button class="button primary" data-action="lap-import" ${job ? 'disabled' : ''}>${icon('upload')}导入 LAP 词表</button></div><div class="lap-mode-bar"><span class="badge">LAP 单词模式</span><span class="hint">更多模式（如 Vocab）将来加入</span></div>${!state().settings.aiEnabled || !readAIKey() || !state().settings.aiModel ? '<div class="notice">JSON 导入、听音拼写和词形练习无需 AI；资料识别、模拟卷生成与词义批改需要配置 AI。图片需要选择支持视觉的模型。<button class="text-button" data-nav="settings">打开设置 →</button></div>' : ''}
       ${c ? `<div class="field"><label for="lap-collection">我的 LAP</label><select id="lap-collection" ${job ? 'disabled' : ''}>${collections().map(item => `<option value="${esc(item.id)}" ${item.id === c.id ? 'selected' : ''}>${esc(item.name)} · ${item.entries.length} 个词族</option>`).join('')}</select></div><div class="ai-tabs" role="tablist" aria-label="LAP 学习方式">${[['words','词族表'],['practice','背诵'],['exam','模拟考试']].map(([key,label]) => `<button class="button ${view === key ? 'soft' : ''}" role="tab" aria-selected="${view === key}" data-action="lap-tab" data-view="${key}" ${job ? 'disabled' : ''}>${label}</button>`).join('')}</div>` : ''}<div class="lap-job" id="lap-job" role="status" ${job ? '' : 'hidden'}><span id="lap-job-text">正在处理…</span><button class="text-button" data-action="lap-cancel">取消</button></div><div class="lap-workspace">${c ? view === 'practice' ? renderPractice(c) : view === 'exam' ? renderExam(c) : renderWords(c) : '<div class="empty"><h2>带来你的第一份 LAP</h2><p>直接上传或粘贴 JSON 词表，无需 AI；也可用 AI 识别文档或图片。核对后开始学习。</p><button class="button primary" data-action="lap-import">上传资料</button></div>'}</div></div>`;
+    if (view === 'practice' && c?.practice?.queue.length) queueMicrotask(() => { if (isPage()) (c.practice.feedback ? $('[data-action="lap-practice-next"]') : $('[data-lap-practice]'))?.focus({preventScroll:true}); });
     if (view === 'practice' && c?.practice?.queue[0]?.skill === 'spelling' && !c.practice.feedback && state().settings.autoSpeak && !job) queueMicrotask(() => { if (isPage()) { const e = c.entries.find(e => e.id === c.practice.queue[0]?.entryId); if (e) playWords([e.word]); } });
   }
+  document.addEventListener('ciyu-ai-stream', e => { if (job?.signal === e.detail.signal && $('#lap-job-text')) $('#lap-job-text').textContent = `AI 正在${e.detail.content ? '输出' : '思考'}… 已接收 ${e.detail.content.length + e.detail.reasoningCount} 字`; });
   async function runJob(work) {
     if (job) return;
     const controller = new AbortController(); job = controller; stopPlayback(); renderPage();
     const report = message => { if (isPage() && $('#lap-job-text')) $('#lap-job-text').textContent = message; };
     try { await work(controller.signal, report); }
     catch (error) { if (error.name !== 'AbortError') bridge.toast(error.message, true); else if (isPage()) bridge.toast('已取消，作答仍然保留'); }
-    finally { if (job === controller) job = null; if (isPage()) renderPage(); }
+    finally { if (job === controller) job = null; if (isPage()) { renderPage(); if (paper()?.result && view === 'exam') $('.lap-score')?.scrollIntoView({block:'start'}); } }
   }
   function openImport() {
     let source = { text: '', images: [], name: 'LAP 单词' };
@@ -182,10 +198,10 @@ export function installMaple(bridge) {
   async function checkPractice(reveal = false) {
     const c = collection(), s = c?.practice, task = s?.queue[0], entry = c?.entries.find(e => e.id === task?.entryId);
     if (!entry || s.feedback || job) return;
-    const apply = feedback => { s.feedback = feedback; updateProgress(entry, task.skill, feedback.correct); bridge.persist(); };
-    if (reveal) apply({ correct: false, text: task.skill === 'spelling' ? `${entry.word} · ${entry.meaning}` : task.skill === 'forms' ? availablePOS(entry).map(pos => `${POS[pos]}：${formText(entry,pos)}`).join('\n') : entry.meaning });
+    const apply = feedback => { recordStudy(state(), entry.word); s.feedback = feedback; updateProgress(entry, task.skill, feedback.correct); bridge.persist(); };
+    if (reveal) { s.answer = {}; apply({ correct: false, text: task.skill === 'spelling' ? `${entry.word} · ${entry.meaning}` : task.skill === 'forms' ? practicePOS(entry).map(pos => `${POS[pos]}：${formText(entry,pos)}`).join('\n') : entry.meaning }); }
     else if (task.skill === 'spelling') apply({ correct: spelling(s.answer) === spelling(entry.word), text: `${entry.word} · ${entry.meaning}` });
-    else if (task.skill === 'forms') { const checks = checkForms(entry, s.answer); apply({ correct: checks.every(c => c.correct), text: checks.map(c => `${POS[c.pos]}：${c.correct ? '正确' : `应为 ${c.expected}`}`).join('\n') }); }
+    else if (task.skill === 'forms') { const checks = checkForms(entry, s.answer, practicePOS(entry)); apply({ correct: checks.every(c => c.correct), text: checks.map(c => `${POS[c.pos]}：${c.correct ? '正确' : `应为 ${c.expected}`}`).join('\n') }); }
     else { if (!requireAI()) return; await runJob(async signal => { const feedback = await gradeMeaning({ ...state().settings }, entry, s.answer, signal); if (!signal.aborted) apply(feedback); }); return; }
     stopPlayback(); renderPage();
   }
@@ -211,19 +227,23 @@ export function installMaple(bridge) {
     if (e.target.id === 'lap-practice-form') { e.preventDefault(); await checkPractice(); }
     if (e.target.id === 'lap-exam-form') {
       e.preventDefault(); if (job || !requireAI()) return;
+      const startImmersive = $('#lap-immersive-start').checked;
       const c = collection(), config = { repeatWords: $('#lap-repeat').checked, ...Object.fromEntries([...document.querySelectorAll('[data-lap-count]')].map(el => [el.dataset.lapCount, Number(el.value)])) };
       let p; try { p = createPaper(c, config); } catch (error) { bridge.toast(error.message, true); return; }
       c.examConfig = p.config; bridge.persist();
       await runJob(async (signal, report) => { await generateCorrections({ ...state().settings }, p, signal, report); if (signal.aborted) return; c.papers.push(p); c.papers = c.papers.slice(-20); c.activePaperId = p.id; bridge.persist(); });
+      if (startImmersive && isPage() && paper()?.id === p.id) await setImmersive(true);
       if (isPage() && paper()?.id === p.id) playWords(p.questions.filter(q => q.section === 'forms').map(q => q.entry.word));
     }
   });
   document.addEventListener('click', async e => {
     const button = e.target.closest('[data-action^="lap-"]'); if (!button || button.disabled) return;
     const action = button.dataset.action, c = collection();
+    if (action === 'lap-answer-toggle') { button.classList.toggle('show-answer'); return; }
+    if (action === 'lap-immersive') { await setImmersive(!immersive); return; }
     if (action === 'lap-import') openImport();
     else if (action === 'lap-import-cancel') { importing?.abort(); bridge.closeModal(); }
-    else if (action === 'lap-tab') { stopPlayback(); view = button.dataset.view; renderPage(); }
+    else if (action === 'lap-tab') { if (immersive) await setImmersive(false); stopPlayback(); view = button.dataset.view; renderPage(); }
     else if (action === 'lap-page') { page = Number(button.dataset.page); renderPage(); }
     else if (action === 'lap-edit' && c) showEditor(c, c);
     else if (action === 'lap-delete' && c) { if (await bridge.confirm('删除这份 LAP？', '这份资料的词族、背诵进度和模拟试卷会一起删除，可以先导出完整备份。', '删除', true)) { state().maple.collections = collections().filter(item => item.id !== c.id); bridge.persist(); renderPage(); } }
@@ -232,20 +252,33 @@ export function installMaple(bridge) {
     else if (action === 'lap-stop-audio') stopPlayback();
     else if (action === 'lap-play-all') playWords(paper().questions.filter(q => q.section === 'forms').map(q => q.entry.word));
     else if (action === 'lap-question-audio') { const q = paper()?.questions.find(q => q.id === button.dataset.question); if (q) playWords([q.entry.word]); }
-    else if (action === 'lap-practice-start' || action === 'lap-practice-all') { if (!c) return; const skills = state().settings.aiEnabled && readAIKey() && state().settings.aiModel ? Object.keys(SKILLS) : ['spelling', 'forms']; c.practice = startPractice(c, action === 'lap-practice-all', Date.now(), skills); bridge.persist(); if (!c.practice) bridge.toast('当前没有到期项目，可以选择练习全部词族'); renderPage(); }
+    else if (action === 'lap-practice-start' || action === 'lap-practice-all') { if (!c) return; const skills = ['forms']; c.practice = startPractice(c, action === 'lap-practice-all', Date.now(), skills); bridge.persist(); if (!c.practice) bridge.toast('当前没有到期项目，可以选择练习全部词族'); renderPage(); }
     else if (action === 'lap-practice-audio') { const task = c?.practice?.queue[0], entry = c?.entries.find(e => e.id === task?.entryId); if (entry) playWords([entry.word]); }
     else if (action === 'lap-practice-reveal') await checkPractice(true);
     else if (action === 'lap-practice-next') { const s = c?.practice; if (!s?.feedback) return; const task = s.queue.shift(); if (!s.feedback.correct) s.queue.splice(Math.min(3, s.queue.length), 0, task); s.completed++; s.feedback = null; s.answer = s.queue[0]?.skill === 'spelling' ? '' : {}; bridge.persist(); stopPlayback(); renderPage(); }
     else if (action === 'lap-grade') {
       const p = paper(); if (!p || p.result || job || !requireAI()) return;
-      if (!await bridge.confirm('提交这张试卷？', '未填写的答案按 0 分处理。批改完成后本卷不能修改，可重新生成试卷继续练习。', '交卷')) return;
-      await runJob(async (signal, report) => { const result = await gradePaper({ ...state().settings }, structuredClone(p), signal, report); if (signal.aborted) return; p.result = result; p.submittedAt = Date.now(); bridge.persist(); });
+      if (!button.dataset.enter && !await bridge.confirm('提交这张试卷？', '未填写的答案按 0 分处理。批改完成后本卷不能修改，可重新生成试卷继续练习。', '交卷')) return;
+      await runJob(async (signal, report) => { const result = await gradePaper({ ...state().settings }, structuredClone(p), signal, report); if (signal.aborted) return; p.result = result; p.submittedAt = Date.now(); for (const q of p.questions) recordStudy(state(), q.entry.word); bridge.persist(); });
     }
     else if (action === 'lap-print') { document.body.classList.add('lap-printing'); window.print(); document.body.classList.remove('lap-printing'); }
   });
+  document.addEventListener('keydown', e => {
+    if (!isPage() || e.key !== 'Enter' || e.shiftKey || e.isComposing || e.repeat || e.ctrlKey || e.metaKey || e.altKey) return;
+    if (e.target.closest('.lap-answer-cell.wrong') && e.target.tagName !== 'INPUT') { e.preventDefault(); e.target.closest('.lap-answer-cell').classList.toggle('show-answer'); return; }
+    const input = e.target;
+    if (!input.matches('[data-lap-practice], [data-lap-answer]')) return;
+    e.preventDefault();
+    if (input.readOnly) { if (input.hasAttribute('data-lap-practice')) $('[data-action="lap-practice-next"]')?.click(); return; }
+    const scope = input.hasAttribute('data-lap-practice') ? '#lap-practice-form' : '.lap-paper';
+    const inputs = [...document.querySelectorAll(`${scope} input:not([readonly]):not([disabled]), ${scope} textarea:not([readonly]):not([disabled])`)];
+    const next = inputs[inputs.indexOf(input)+1];
+    if (next) next.focus(); else if (scope === '#lap-practice-form') $('#lap-practice-form').requestSubmit();
+    else { const button = $('[data-action="lap-grade"]'); if (button && !button.disabled) { button.dataset.enter = 'true'; button.click(); delete button.dataset.enter; } }
+  });
   $('#modal').addEventListener('close', () => importing?.abort());
-  const cancelAll = () => { job?.abort(); importing?.abort(); stopPlayback(); };
+  const cancelAll = () => { document.body.classList.remove('lap-practicing'); if (immersive) { immersive = false; document.body.classList.remove('lap-immersive'); if (document.fullscreenElement) document.exitFullscreen().catch(()=>{}); } job?.abort(); importing?.abort(); stopPlayback(); };
   document.addEventListener('change', e => { if (e.target.dataset.setting === 'aiEnabled' && !e.target.checked) cancelAll(); });
   document.addEventListener('visibilitychange', () => { if (document.hidden) stopPlayback(); });
-  return { renderPage, cancelAll, onNavigate: () => { job?.abort(); stopPlayback(); } };
+  return { renderPage, cancelAll, onNavigate: cancelAll };
 }

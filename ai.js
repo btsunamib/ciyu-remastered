@@ -48,36 +48,87 @@ export async function fetchModels(settings, signal) {
     throw error;
   } finally { clearTimeout(timer); signal?.removeEventListener('abort', cancel); }
 }
-export async function requestAI(settings, messages, { signal, json = false } = {}) {
+export function thinkingParameters(settings) {
+  if (!['on','off'].includes(settings.aiThinking)) return {};
+  const on = settings.aiThinking === 'on', model = settings.aiModel || '';
+  let format = settings.aiThinkingFormat || 'auto';
+  if (format === 'auto') {
+    if (/dashscope|aliyun/i.test(settings.aiBase) || /qwen/i.test(model)) format = 'enable_thinking';
+    else if (/deepseek/i.test(settings.aiBase) || /deepseek/i.test(model)) format = 'thinking';
+    else if (/^(gpt-5|gpt-6|o[134])/.test(model)) format = 'reasoning_effort';
+    else return { enable_thinking: on };
+  }
+  if (format === 'thinking') return { thinking: { type: on ? 'enabled' : 'disabled' } };
+  if (format === 'enable_thinking') return { enable_thinking: on };
+  return { reasoning_effort: on ? 'high' : /^o[134]/.test(model) ? 'low' : /^gpt-5(?:$|-mini|-nano)/.test(model) ? 'minimal' : 'none' };
+}
+export async function requestAI(settings, messages, { signal, json = false, onToken } = {}) {
   if (!settings.aiEnabled) throw new Error('先在设置中打开 AI 学习助手');
   const key = readAIKey(); if (!key) throw new Error('先在设置中填写 API 密钥');
   if (!settings.aiModel?.trim()) throw new Error('先在设置中获取模型列表并选择模型');
-  const controller = new AbortController(); let timedOut = false;
+  const controller = new AbortController(); let timedOut = false, receivedToken = false;
   const cancel = () => controller.abort(); signal?.addEventListener('abort', cancel, { once: true });
   if (signal?.aborted) controller.abort();
-  const timer = setTimeout(() => { timedOut = true; controller.abort(); }, 90000);
+  const timer = setTimeout(() => { if (!receivedToken) { timedOut = true; controller.abort(); } }, 90000);
   try {
-    const body = { model: settings.aiModel.trim(), messages, stream: false };
+    const body = { model: settings.aiModel.trim(), messages, stream: settings.aiStream === true, ...thinkingParameters(settings) };
     if (json && settings.aiJsonMode) body.response_format = { type: 'json_object' };
     const response = await fetch(completionURL(settings.aiBase), {
       method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
       body: JSON.stringify(body), signal: controller.signal, credentials: 'omit', redirect: 'error'
     });
     if (!response.ok) {
-      const reasons = { 400: '服务不支持本次请求格式，请检查模型能力；图片识别需选择支持视觉输入的模型', 401: '密钥无效或已过期，请检查设置', 403: '接口拒绝了请求，请检查密钥权限和服务地址', 404: '找不到接口或模型，请检查地址和选择的模型', 413: '发送的内容太长，请减少文档内容', 429: '请求过多或余额不足，请稍后再试' };
+      const reasons = { 400: '服务不支持本次请求格式，请检查模型能力或将思考设置改为跟随模型；图片需视觉模型', 401: '密钥无效或已过期，请检查设置', 403: '接口拒绝请求，请检查密钥权限和服务地址', 404: '找不到接口或模型', 413: '内容太长，请减少文档内容', 429: '请求过多或余额不足，请稍后再试' };
       throw new Error(reasons[response.status] || `AI 服务暂时没有完成请求（${response.status}）`);
     }
-    let data; try { data = await response.json(); } catch { throw new Error('接口没有返回 JSON，请使用兼容 Chat Completions 的接口'); }
-    const choice = data.choices?.[0];
-    if (choice?.finish_reason === 'length') throw new Error('模型的回复被截断了，请减少词汇数量或把文档拆小后再试');
-    const content = choice?.message?.content;
-    const text = typeof content === 'string' ? content : Array.isArray(content) ? content.map(part => part.text || '').join('\n') : '';
-    if (!text.trim()) throw new Error('AI 没有返回正文，请检查模型是否支持对话输出');
-    return text.trim();
+    let output = '';
+    if (body.stream && response.headers.get('content-type')?.includes('text/event-stream')) {
+      if (!response.body) throw new Error('接口没有返回可读取的流');
+      const reader = response.body.getReader(), decoder = new TextDecoder();
+      let buffer = '', ended = false, finished = false, reasoningCount = 0;
+      const event = block => {
+        const data = block.split(/\r?\n/).filter(line => line.startsWith('data:')).map(line => line.slice(5).trimStart()).join('\n');
+        if (!data) return;
+        if (data.trim() === '[DONE]') { ended = true; return; }
+        let item; try { item = JSON.parse(data); } catch { throw new Error('AI 流式数据格式损坏，请重试'); }
+        if (item.error) throw new Error(item.error.message || 'AI 流式请求失败');
+        const choice = item.choices?.[0]; if (!choice) return;
+        if (choice.finish_reason === 'length') throw new Error('模型回复被截断，请减少内容再试');
+        if (choice.finish_reason === 'content_filter') throw new Error('服务过滤了这次回复');
+        if (choice.finish_reason) finished = true;
+        const delta = choice.delta || {};
+        const content = typeof delta.content === 'string' ? delta.content : Array.isArray(delta.content) ? delta.content.map(p => p.text || '').join('') : '';
+        const reasoning = typeof delta.reasoning_content === 'string' ? delta.reasoning_content : typeof delta.reasoning === 'string' ? delta.reasoning : '';
+        if (content || reasoning) {
+          receivedToken = true; clearTimeout(timer); output += content; reasoningCount += reasoning.length;
+          const progress = { content: output, reasoningCount, signal, json };
+          onToken?.(progress);
+          if (typeof document !== 'undefined') document.dispatchEvent(new CustomEvent('ciyu-ai-stream', { detail: progress }));
+        }
+      };
+      try {
+        while (!ended) {
+          const {value,done} = await reader.read();
+          buffer += decoder.decode(value, {stream:!done});
+          let match;
+          while ((match = /\r?\n\r?\n/.exec(buffer))) { const block = buffer.slice(0,match.index); buffer = buffer.slice(match.index+match[0].length); event(block); if (ended) break; }
+          if (done) { if (buffer.trim() && !ended) event(buffer); break; }
+        }
+        if (!ended && !finished) throw new Error('AI 流式连接中断，回复尚未完成，请重试');
+      } finally { await reader.cancel().catch(()=>{}); }
+    } else {
+      let data; try { data = await response.json(); } catch { throw new Error('接口没有返回 JSON 或 SSE，请使用兼容 Chat Completions 的接口'); }
+      const choice = data.choices?.[0];
+      if (choice?.finish_reason === 'length') throw new Error('模型回复被截断，请减少内容再试');
+      const content = choice?.message?.content;
+      output = typeof content === 'string' ? content : Array.isArray(content) ? content.map(p => p.text || '').join('\n') : '';
+    }
+    if (!output.trim()) throw new Error('AI 没有返回正文，请检查模型是否支持对话输出');
+    return output.trim();
   } catch (error) {
-    if (timedOut) throw new Error('AI 请求超过 90 秒，可重试或换一个响应更快的模型');
+    if (timedOut) throw new Error('AI 在 90 秒内未开始输出，请重试或换模型');
     if (controller.signal.aborted) throw new DOMException('已取消', 'AbortError');
-    if (error instanceof TypeError) throw new Error('无法连接接口：请检查网络，并确认服务允许网页跨域访问（CORS）');
+    if (error instanceof TypeError) throw new Error('无法连接接口：请检查网络与服务跨域设置（CORS）');
     throw error;
   } finally { clearTimeout(timer); signal?.removeEventListener('abort', cancel); }
 }

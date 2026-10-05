@@ -2,7 +2,7 @@ import {
   MODE_INFO, DEFAULT_SETTINGS, STORAGE_KEY, LEGACY_KEY, SAMPLE_TEXT, uid, normWord, sanitizeSettings,
   bookById, wordById, bookStats, parseImport, decodeText, importEntries, shuffle, sessionKey,
   startSession, currentItem, chooseNext, revealSpeaking, gradeAnswer, correctToWrong, retryAnswer,
-  advanceSession, isMastered, setMastery, resetBook, removeWord, invalidateSessions
+  advanceSession, isMastered, studyStats, setMastery, resetBook, removeWord, invalidateSessions
 } from './core.js';
 import { loadDurableState, saveDurableState, savingError, parseBackup, backupText, downloadFile } from './storage.js';
 import { Pronunciation } from './audio.js';
@@ -97,11 +97,13 @@ function renderLibrary() {
   const count = state.books.reduce((sum, book) => sum + book.words.length, 0);
   const sessions = Object.values(state.sessions).sort((a, b) => b.startedAt - a.startedAt);
   const recent = sessions[0];
+  const stats = studyStats(state);
   const date = new Intl.DateTimeFormat('zh-CN', { month: 'long', day: 'numeric', weekday: 'long' }).format(new Date());
   main.innerHTML = `<div class="page">
     <div class="page-intro"><div><h1>把词汇，练成直觉。</h1><p>从认识到会用，找到适合你的练习节奏。</p></div><span class="date-label">${date}</span></div>
     <section class="welcome"><div class="welcome-copy"><div class="eyebrow">YOUR VOCABULARY ISLAND</div><h2>${due ? '让熟悉的词，再见一面。' : '今天，给记忆一点空间。'}</h2><p>${due ? `有 ${due} 个词到了复习时间，趁还记得，再巩固一次。` : '不用着急，一次只专注眼前的一小组。'}</p><button class="button primary" data-action="${due ? 'review-all' : state.books.length ? 'choose-mode' : 'demo'}" ${state.books.length && !due ? `data-book="${esc(state.books[0].id)}"` : ''}>${due ? '开始今日复习' : state.books.length ? '开始一小组' : '试学一组'}${icon('arrow')}</button></div><div class="hero-art" aria-hidden="true"><div class="hero-ring"></div><div class="hero-stone"></div><div class="hero-card back"><span>Aa</span><i></i><i></i></div><div class="hero-card"><span>a.</span><i></i><i></i></div><div class="hero-dot"></div></div></section>
     <div class="metrics"><div class="metric"><div class="metric-icon">${icon('library')}</div><div><div class="metric-value">${count}</div><div class="metric-label">我的词汇 · ${state.books.length} 本词书</div></div></div><div class="metric"><div class="metric-icon">${icon('calendar')}</div><div><div class="metric-value">${due}</div><div class="metric-label">今日待复习</div></div></div><div class="metric"><div class="metric-icon">${icon('checklist')}</div><div><div class="metric-value">${state.history.length}</div><div class="metric-label">已完成的练习</div></div></div></div>
+    <section class="daily-study"><div class="study-metrics"><div><b>${stats.total}</b><div>累计学过的单词</div></div><div><b>${stats.today}</b><div>今天学过的单词</div></div></div><div class="daily-goal-row"><label for="daily-goal">每日目标</label><input id="daily-goal" class="input" type="number" min="1" max="1000" data-setting="dailyGoal" value="${stats.goal}"><span>个单词 · ${stats.today >= stats.goal ? '今日目标已完成' : `还差 ${stats.goal - stats.today} 个`}</span></div><progress max="${stats.goal}" value="${Math.min(stats.today,stats.goal)}" aria-label="今日学习目标"></progress><p class="hint">按实际练习的单词去重，普通词书与 LAP 合并统计。历史掌握词计入累计，今日练习日期从本次更新开始记录。</p></section>
     ${recent ? `<div class="continue-card">${icon('clock')}<div><h3>接着上次的节奏</h3><p>${esc(recent.bookId === 'all' ? '全部词书' : bookById(state, recent.bookId)?.name)} · ${MODE_INFO[recent.mode].name} · 还有 ${recent.active.length + recent.queue.length} 项</p></div><button class="button primary compact" data-action="resume" data-key="${esc(recent.key)}">继续练习${icon('arrow')}</button></div>` : ''}
     ${state.settings.aiEnabled ? `<div class="ai-library-link"><span>${icon('sparkle')}让 AI 帮你把资料整理成词书</span><button class="button soft compact" data-action="ai-import">上传文档${icon('arrow')}</button></div>` : ''}<div class="section-head"><h2>我的词书<small>${state.books.length} 本</small></h2>${state.books.length ? `<div class="search-field">${icon('search')}<input class="input book-search" id="book-search" aria-label="搜索词书" placeholder="找一本词书…" value="${esc(bookQuery)}"></div>` : ''}</div>
     ${state.books.length ? '<div id="books" class="books"></div>' : `<div class="empty"><div class="empty-icon">${icon('book')}</div><h3>你的第一座词汇小岛</h3><p>把自己的单词、短语或句子粘贴进来，也可以上传 TXT。认读、听力、口语和写作，会各自记录进度。</p><div class="empty-actions"><button class="button primary" data-action="import">${icon('plus')}导入我的词书</button><button class="button" data-action="demo">先试学一组</button></div></div>`}
@@ -510,6 +512,7 @@ document.addEventListener('change', async event => {
     }
     state.settings = sanitizeSettings({ ...state.settings, [key]: value }); persist();
     if (element.type === 'number') element.value = state.settings[key];
+    if (key === 'dailyGoal' && route === 'library') renderLibrary();
     if (key === 'mixOld') $('#mix-options').hidden = !state.settings.mixOld;
     if (key === 'theme' || key.startsWith('ui')) applyTheme();
     if (key === 'uiCustom') { $('#custom-color-fields').hidden = !state.settings.uiCustom; $('#custom-color-fields').querySelectorAll('[data-setting]').forEach(input => { input.value = state.settings[input.dataset.setting]; $(`#${input.dataset.setting}-value`).textContent = input.value; }); }

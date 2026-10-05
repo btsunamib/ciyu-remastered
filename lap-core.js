@@ -125,8 +125,8 @@ export function createPaper(collection, rawConfig, random = Math.random) {
   }
   return { id: id(), collectionId: collection.id, name: collection.name, createdAt: Date.now(), config, columns, questions, submittedAt: null, result: null };
 }
-export function checkForms(entry, answers) {
-  return availablePOS(entry).map(pos => {
+export function checkForms(entry, answers, cols = availablePOS(entry)) {
+  return cols.map(pos => {
     const expected = entry.forms[pos].map(f => spelling(f.text)).sort();
     const actual = [...new Set(text(answers?.[pos]).split(/[,;，；/\n]+/).map(spelling).filter(Boolean))].sort();
     return { pos, correct: expected.length === actual.length && expected.every((f, i) => f === actual[i]), expected: entry.forms[pos].map(f => f.text).join(' / ') };
