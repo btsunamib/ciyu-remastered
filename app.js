@@ -4,7 +4,7 @@ import {
   startSession, currentItem, chooseNext, revealSpeaking, gradeAnswer, correctToWrong, retryAnswer,
   advanceSession, isMastered, setMastery, resetBook, removeWord, invalidateSessions
 } from './core.js';
-import { loadState, saveState, parseBackup, backupText, downloadFile } from './storage.js';
+import { loadDurableState, saveDurableState, savingError, parseBackup, backupText, downloadFile } from './storage.js';
 import { Pronunciation } from './audio.js';
 import { icon } from './icons.js';
 import { installAI } from './ai-ui.js';
@@ -14,7 +14,7 @@ import { applyAppearance, appearanceHTML, PALETTES } from './appearance.js';
 const $ = (selector, root = document) => root.querySelector(selector);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const main = $('#main'); const dialog = $('#modal');
-const loaded = loadState(); let state = loaded.state;
+const loaded = await loadDurableState(); let state = loaded.state;
 let route = 'library'; let confirmResolve = null; let lastFocused = null; let bookQuery = ''; let saveFailed = false; let inputSave = null; let recoveryRequired = !!loaded.error;
 const wordsStates = new Map();
 let ai, maple;
@@ -27,10 +27,10 @@ function toast(message, error = false) {
   const element = document.createElement('div'); element.className = `toast${error ? ' error' : ''}`; element.textContent = message;
   $('#toasts').append(element); setTimeout(() => element.remove(), error ? 6000 : 3200);
 }
-function persist() {
-  if (recoveryRequired) return;
-  try { saveState(state); saveFailed = false; }
-  catch { if (!saveFailed) toast('保存空间不足，请先导出备份，再清理学习素材或自定义背景。', true); saveFailed = true; }
+async function persist() {
+  if (recoveryRequired) { toast('请先导出当前数据或导入备份，恢复保存功能。', true); return false; }
+  try { await saveDurableState(state); saveFailed = false; return true; }
+  catch (error) { if (!saveFailed) toast(savingError(error), true); saveFailed = true; return false; }
 }
 function applyTheme() {
   const dark = state.settings.theme === 'dark' || state.settings.theme === 'auto' && darkQuery.matches;

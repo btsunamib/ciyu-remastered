@@ -141,7 +141,10 @@ export function installMaple(bridge) {
     let entries = structuredClone(result.entries);
     const cols = [...new Set(['noun','verb','pastTense','adjective','adverb', ...entries.flatMap(availablePOS)])];
     bridge.openModal(existing ? '核对 LAP 词族' : '核对导入结果', '只保存表格中的词形；空白和斜线表示没有对应形式。同格多个形式用 / 分隔。', `<div class="field"><label for="lap-name">LAP 名称</label><input class="input" id="lap-name" maxlength="60" value="${esc(result.name)}"></div>${result.warnings?.length ? `<div class="notice">${result.warnings.map(esc).join('<br>')}</div>` : ''}<p class="hint">${entries.length} 个词族。核对拼写、词性与释义；没有释义也可保存，稍后补充。编辑词形后，对应的背诵进度会重置。既有试卷保存出题时的词表。</p><div class="lap-editor-list">${entries.map((e,n) => `<details class="lap-edit-row" ${entries.length <= 8 ? 'open' : ''}><summary>${n + 1}. ${esc(e.word)} · ${esc(e.meaning)}</summary><div class="field"><label>主词<input class="input" data-lap-edit="word" data-index="${n}" value="${esc(e.word)}" maxlength="100"></label></div><div class="field"><label>词族释义<textarea class="textarea" data-lap-edit="meaning" data-index="${n}" maxlength="2000">${esc(e.meaning)}</textarea></label></div><div class="lap-config-grid">${cols.map(pos => `<div class="field"><label>${POS[pos]}<input class="input" data-lap-edit="${pos}" data-index="${n}" value="${esc(formText(e,pos))}" placeholder="／" maxlength="1500"></label><label>对应释义（按词形顺序，用 / 分隔）<input class="input" data-lap-edit-def="${pos}" data-index="${n}" value="${esc((e.forms[pos] || []).map(f => f.meaning).join(' / '))}" maxlength="2000"></label></div>`).join('')}</div><div class="field"><label>用法 / 核对备注<input class="input" data-lap-edit="note" data-index="${n}" value="${esc(e.note)}" maxlength="2000"></label></div><label class="check-label"><input type="checkbox" data-lap-remove="${n}">移除这个词族</label></details>`).join('')}</div><p class="ai-document-progress" id="lap-editor-error" role="status"></p><div class="modal-foot"><button class="button" data-action="close-modal">取消</button><button class="button primary" id="lap-save">保存 LAP</button></div>`);
-    $('#lap-save').addEventListener('click', () => {
+    $('#lap-save').addEventListener('click', async () => {
+      const saveButton = $('#lap-save'); if (saveButton.disabled) return;
+      saveButton.disabled = true;
+      const previousCollections = structuredClone(collections());
       try {
         const name = $('#lap-name').value.trim(); if (!name) throw new Error('请填写 LAP 名称');
         const edited = structuredClone(entries);
@@ -167,8 +170,13 @@ export function installMaple(bridge) {
           }
           Object.assign(existing, { name, entries: clean, practice: null }); selectedId = existing.id;
         } else { const c = { id: uid(), mode: 'lap', name, entries: clean, createdAt: Date.now(), papers: [], activePaperId: '', practice: null, examConfig: { ...DEFAULT_EXAM } }; collections().push(c); selectedId = c.id; }
-        view = 'words'; query = ''; page = 0; bridge.persist(); bridge.closeModal(); bridge.navigate('maple'); bridge.toast('LAP 词族已保存');
+        if (!await bridge.persist()) {
+          state().maple.collections = previousCollections;
+          throw new Error('保存未成功，导入内容仍在此核对页。请先导出已有数据备份，解决存储问题后再点击保存。');
+        }
+        view = 'words'; query = ''; page = 0; bridge.closeModal(); bridge.navigate('maple'); bridge.toast('LAP 词族已保存');
       } catch (error) { $('#lap-editor-error').textContent = error.message; }
+      finally { if (saveButton.isConnected) saveButton.disabled = false; }
     });
   }
   async function checkPractice(reveal = false) {
