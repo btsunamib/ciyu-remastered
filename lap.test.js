@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { POS, availablePOS, normalizeEntries, mergeEntries, createPaper, checkForms, hasTargetInDefinition, validateGrades, updateProgress, startPractice } from './lap-core.js';
+import { POS, availablePOS, normalizeEntries, parseLAPJSON, mergeEntries, createPaper, checkForms, hasTargetInDefinition, validateGrades, updateProgress, startPractice } from './lap-core.js';
 import { freshState, normalizeState } from './core.js';
 import { backupText, parseBackup } from './storage.js';
 import { modelsURL, fetchModels, saveAIKey } from './ai.js';
@@ -42,7 +42,7 @@ test('LAP 保留多词形与空格，严格识别不完整数据，分段合并�
   assert.equal(clean.forms.noun.length, 2); assert.equal(clean.forms.adverb, undefined); assert.equal(availablePOS(clean).length, 3);
   const partial = structuredClone(clean); partial.forms.noun = [{ text: 'creativity', meaning: '创造力' }];
   const merged = mergeEntries([clean, partial]); assert.equal(merged.length, 1); assert.equal(merged[0].forms.noun.length, 3);
-  assert.throws(() => normalizeEntries([{ word: 'create', meaning: '', forms: {} }], true), /释义/);
+  assert.throws(() => normalizeEntries([{ word: 'create', meaning: '', forms: {} }], true), /词形/);
   assert.throws(() => normalizeEntries([{ word: 'missing', meaning: '含义', forms: { verb: ['create'] } }], true), /主词/);
 });
 test('默认四类各三题，禁止重复覆盖全卷词族，题目保存独立词表快照', () => {
@@ -120,4 +120,42 @@ test('词义背诵检查每个已有词性，取消请求后不能落下评分',
   });
   const controller = new AbortController(); controller.abort();
   await mockAI((url, body, options) => { if (options.signal.aborted) throw new DOMException('cancelled','AbortError'); return completion({grades:[]}); }, async () => assert.rejects(gradeMeaning(settings, entry, {}, controller.signal), { name:'AbortError' }));
+});
+
+
+test('直接 JSON 导入保留过去式、大小写与源备注，N/A 不成为词形，缺释义可备份恢复', () => {
+  const input = [
+    { num: 8, word: 'phase', pos: 'noun', noun: 'phase', verb: 'phase', pastTense: 'phased', adjective: 'phased', adverb: '*Phasally (not common)' },
+    { num: 10, word: 'predict', pos: 'verb', noun: 'prediction', verb: 'predict', pastTense: 'predicted', adjective: 'predictable / predictive', adverb: 'Predictably / predictively' },
+    { num: 19, word: 'certain', pos: 'adjective', noun: 'certainty', verb: 'N/A', pastTense: 'N/A', adjective: 'certain', adverb: 'certainly' },
+    { num: 29, word: 'hence', pos: 'adverb', noun: 'N/A', verb: 'N/A', pastTense: 'N/A', adjective: 'N/A', adverb: 'hence' },
+    { word: 'trauma', noun: 'trauma', pastTense: 'tramatized' }
+  ];
+  const { entries, warnings } = parseLAPJSON('\uFEFF' + JSON.stringify(input), 'English 12');
+  assert.equal(entries.length, 5); assert.ok(warnings.length);
+  assert.equal(entries[0].forms.pastTense[0].text, 'phased');
+  assert.equal(entries[0].forms.adverb[0].text, 'Phasally');
+  assert.match(entries[0].note, /\*Phasally \(not common\)/);
+  assert.equal(entries[0].meaning, '');
+  assert.equal(entries[1].forms.adverb[0].text, 'Predictably');
+  assert.equal(checkForms(entries[1], { adjective: 'predictive / predictable' }).find(c => c.pos === 'adjective').correct, true);
+  assert.equal(entries[2].forms.verb, undefined); assert.equal(entries[2].forms.pastTense, undefined);
+  assert.deepEqual(availablePOS(entries[3]), ['adverb']);
+  assert.equal(entries[4].forms.pastTense[0].text, 'tramatized');
+  const state = freshState(); state.maple = { collections: [{ id: 'json-lap', name: 'English 12', entries }] };
+  const restored = parseBackup(backupText(state)).maple.collections[0].entries;
+  assert.deepEqual(restored, entries);
+  const session = startPractice({ entries }, true, Date.now(), ['spelling', 'forms']);
+  assert.ok(session.queue.every(t => t.skill !== 'meaning'));
+});
+
+test('JSON 格式和类型错误给出明确行号，失败不静默丢行或接受重复词族', () => {
+  assert.throws(() => parseLAPJSON('[broken'), /JSON 格式/);
+  for (const value of [{}, [], [null], [{ noun: 'goal' }], [{ word: 'goal', noun: 123 }]]) assert.throws(() => parseLAPJSON(JSON.stringify(value)));
+  assert.throws(() => parseLAPJSON(JSON.stringify([{ word: 'goal', noun: 'goal' }, { word: 'x', noun: 'x2' }])), /第 2 行/);
+  assert.throws(() => parseLAPJSON(JSON.stringify([{ word: 'goal', noun: 'goal' }, { word: 'Goal', noun: 'goal' }])), /重复主词/);
+  const entries = parseLAPJSON(JSON.stringify([{ word: 'goal', noun: 'goal', verb: 'goal (rarely used)', pastTense: 'Gained (used when referring to achieving a goal)', adverb: 'N/A', meaning: '目标' }])).entries;
+  assert.equal(entries[0].meaning, '目标'); assert.equal(entries[0].forms.pastTense[0].text, 'Gained');
+  const paper = createPaper({ id: 'json-lap', name: 'LAP', entries }, { forms: 0, meanings: 0, sentences: 1, corrections: 0 }, () => 0.9);
+  assert.notEqual(paper.questions[0].pos, 'pastTense');
 });

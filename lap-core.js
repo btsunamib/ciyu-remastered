@@ -1,5 +1,5 @@
 // LAP data is separate from ordinary word books, but lives in the same backup.
-export const POS = { noun: '名词 n.', verb: '动词 v.', adjective: '形容词 adj.', adverb: '副词 adv.', pronoun: '代词 pron.', preposition: '介词 prep.', conjunction: '连词 conj.', determiner: '限定词 det.', interjection: '感叹词 interj.', numeral: '数词 num.' };
+export const POS = { noun: '名词 n.', verb: '动词 v.', pastTense: '过去式', adjective: '形容词 adj.', adverb: '副词 adv.', pronoun: '代词 pron.', preposition: '介词 prep.', conjunction: '连词 conj.', determiner: '限定词 det.', interjection: '感叹词 interj.', numeral: '数词 num.' };
 export const SKILLS = { spelling: '听音拼写', forms: '词性转换', meaning: '词义回忆' };
 export const DEFAULT_EXAM = { forms: 3, meanings: 3, sentences: 3, corrections: 3, repeatWords: false };
 const id = () => globalThis.crypto?.randomUUID?.() || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
@@ -25,7 +25,7 @@ export function normalizeEntries(raw, strict = false) {
       if (unique.size) forms[pos] = [...unique.values()].slice(0, 12);
     }
     const word = text(item.word, 100), meaning = text(item.meaning);
-    if (!word || !meaning || !availablePOS({ forms }).length) { if (strict) throw new Error('每个词族需要主词、释义和至少一个已列出的词性'); else continue; }
+    if (!word || !availablePOS({ forms }).length) { if (strict) throw new Error('每个词族需要主词和至少一个已列出的词形'); else continue; }
     if (!/^[a-z][a-z '\-]*$/i.test(word) || !Object.values(forms).flat().some(f => spelling(f.text) === spelling(word))) { if (strict) throw new Error(`主词“${word}”必须是表格中已有的词形`); else continue; }
     let entryId = text(item.id, 100) || id(); if (seen.has(entryId)) entryId = id(); seen.add(entryId);
     const progress = {};
@@ -33,7 +33,7 @@ export function normalizeEntries(raw, strict = false) {
       const p = item.progress?.[skill];
       progress[skill] = { streak: Math.min(10, Math.max(0, Number(p?.streak) || 0)), stage: Math.min(5, Math.max(0, Number(p?.stage) || 0)), dueAt: Math.max(0, Number(p?.dueAt) || 0) };
     }
-    entries.push({ id: entryId, word, meaning, forms, note: text(item.note), progress });
+    entries.push({ id: entryId, word, meaning, forms, note: text(item.note), progress, ...(Number.isInteger(item.num) ? { num: item.num } : {}), ...(text(item.pos, 100) ? { pos: text(item.pos, 100) } : {}) });
     if (entries.length > 1000) throw new Error('单份 LAP 最多 1000 个词族，请拆分资料');
   }
   return entries;
@@ -51,6 +51,39 @@ export function mergeEntries(parts) {
     if (!previous.meaning.includes(entry.meaning)) previous.meaning += `；${entry.meaning}`;
   }
   return normalizeEntries([...map.values()], true);
+}
+// Flat LAP JSON is parsed locally, without AI, dictionary lookup or spelling changes.
+export function parseLAPJSON(source, name = 'LAP 单词') {
+  let raw;
+  try { raw = JSON.parse(source.replace(/^\uFEFF/, '')); }
+  catch { throw new Error('JSON 格式错误，请检查逗号、引号和括号'); }
+  if (!Array.isArray(raw) || !raw.length || raw.length > 1000) throw new Error('JSON 必须是含 1–1000 个单词对象的数组');
+  const empty = value => !value || /^(?:n\s*\/\s*a|none|null|[—–\-/\\\s]+)$/i.test(value);
+  const entries = raw.map((item, index) => {
+    const fail = message => { throw new Error(`第 ${index + 1} 行：${message}`); };
+    if (!item || typeof item !== 'object' || Array.isArray(item)) fail('需要一个单词对象');
+    if (typeof item.word !== 'string' || !item.word.trim()) fail('缺少 word 主词');
+    if (item.word.trim().length > 100) fail('主词过长');
+    const forms = {}, notes = [];
+    if (item.num !== undefined) { if (!Number.isInteger(item.num)) fail('num 必须是整数'); notes.push(`原序号：${item.num}`); }
+    if (item.pos !== undefined) { if (typeof item.pos !== 'string' || item.pos.length > 100) fail('pos 必须是词性文字'); notes.push(`主词词性：${item.pos}`); }
+    for (const key of Object.keys(POS)) {
+      if (item[key] === undefined || item[key] === null) continue;
+      if (typeof item[key] !== 'string' || item[key].length > 1500) fail(`${key} 必须是词形文字，最多 1500 字符`);
+      const cell = item[key].trim(); if (empty(cell)) continue;
+      const cleaned = cell.replace(/\([^)]*\)|（[^）]*）/g, '').replace(/\*/g, '').trim();
+      if (cleaned !== cell) notes.push(`${POS[key]}原文：${cell}`);
+      const values = cleaned.split(/[/,;，；\n]+/).map(v => v.trim()).filter(v => !empty(v));
+      if (values.length) forms[key] = values.map(word => ({ text: word, meaning: '' }));
+    }
+    if (item.meaning !== undefined && typeof item.meaning !== 'string') fail('meaning 必须是释义文字');
+    if (item.note !== undefined && typeof item.note !== 'string') fail('note 必须是备注文字');
+    if (item.note) notes.push(item.note);
+    try { return normalizeEntries([{ word: item.word, meaning: item.meaning || '', forms, note: notes.join('；'), num: item.num, pos: item.pos }], true)[0]; }
+    catch (error) { fail(error.message); }
+  });
+  if (new Set(entries.map(e => spelling(e.word))).size !== entries.length) throw new Error('JSON 中有重复主词，请先合并对应行');
+  return { name, entries, warnings: entries.some(e => !e.meaning) ? ['JSON 未提供的释义保持空白，可在此补充；不会调用 AI 自动补全。括号说明与星号保存在备注，拼写按原文保留。'] : [] };
 }
 export function examConfig(raw = {}) {
   const result = { repeatWords: raw.repeatWords === true };
@@ -83,7 +116,9 @@ export function createPaper(collection, rawConfig, random = Math.random) {
       if (!pool.length) pool = [...shuffled(source.filter(e => !used.has(e.id)), random), ...(config.repeatWords ? shuffled(source.filter(e => used.has(e.id)), random) : [])];
       const entry = pool.shift(); if (!entry) throw new Error('可用词族不足，请调整题数');
       used.add(entry.id);
-      const pos = availablePOS(entry)[Math.floor(random() * availablePOS(entry).length)];
+      const choices = availablePOS(entry).filter(pos => section === 'forms' || pos !== 'pastTense');
+      if (!choices.length) throw new Error(`词族“${entry.word}”只有过去式，不能用于此类题目，请补充词性形式`);
+      const pos = choices[Math.floor(random() * choices.length)];
       const target = entry.forms[pos][Math.floor(random() * entry.forms[pos].length)];
       questions.push({ id: id(), section, entry: structuredClone(entry), pos, target: structuredClone(target), maxScore: section === 'forms' ? availablePOS(entry).length : 2, answer: section === 'forms' ? {} : '' });
     }
@@ -93,7 +128,7 @@ export function createPaper(collection, rawConfig, random = Math.random) {
 export function checkForms(entry, answers) {
   return availablePOS(entry).map(pos => {
     const expected = entry.forms[pos].map(f => spelling(f.text)).sort();
-    const actual = [...new Set(text(answers?.[pos]).split(/[,;，；\n/]+/).map(spelling).filter(Boolean))].sort();
+    const actual = [...new Set(text(answers?.[pos]).split(/[,;，；/\n]+/).map(spelling).filter(Boolean))].sort();
     return { pos, correct: expected.length === actual.length && expected.every((f, i) => f === actual[i]), expected: entry.forms[pos].map(f => f.text).join(' / ') };
   });
 }
@@ -125,10 +160,10 @@ export function updateProgress(entry, skill, correct, now = Date.now()) {
   p.stage = correct ? Math.min(5, p.stage + 1) : 0;
   p.dueAt = correct ? now + intervals[p.stage] : now;
 }
-export function startPractice(collection, all = false, now = Date.now()) {
+export function startPractice(collection, all = false, now = Date.now(), skills = Object.keys(SKILLS)) {
   const tasks = [];
   for (const entry of collection.entries.slice().sort((a, b) => Math.min(...Object.values(a.progress).map(p => p.dueAt)) - Math.min(...Object.values(b.progress).map(p => p.dueAt)))) {
-    for (const skill of Object.keys(SKILLS)) if (all || entry.progress[skill].dueAt <= now) tasks.push({ entryId: entry.id, skill });
+    for (const skill of skills.filter(s => SKILLS[s])) if (all || entry.progress[skill].dueAt <= now) tasks.push({ entryId: entry.id, skill });
     if (tasks.length >= 36) break;
   }
   if (!tasks.length) return null;

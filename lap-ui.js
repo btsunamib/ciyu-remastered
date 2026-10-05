@@ -1,6 +1,6 @@
 import { uid } from './core.js';
 import { readAIKey } from './ai.js';
-import { POS, SKILLS, DEFAULT_EXAM, availablePOS, normalizeEntries, createPaper, checkForms, spelling, updateProgress, startPractice } from './lap-core.js';
+import { POS, SKILLS, DEFAULT_EXAM, availablePOS, normalizeEntries, parseLAPJSON, createPaper, checkForms, spelling, updateProgress, startPractice } from './lap-core.js';
 import { readLAPFiles, extractLAP, generateCorrections, gradePaper, gradeMeaning } from './lap-ai.js';
 import { icon } from './icons.js';
 
@@ -76,8 +76,8 @@ export function installMaple(bridge) {
   }
   function renderPage() {
     const c = collection(); if (c) selectedId = c.id;
-    bridge.main.innerHTML = `<div class="page maple-page"><div class="page-intro"><div><div class="eyebrow">MAPLE LEARNING</div><h1><span aria-hidden="true">🍁</span> 枫叶模式</h1><p>从一张词表，到会拼写、会转换、会表达。</p></div><button class="button primary" data-action="lap-import" ${job ? 'disabled' : ''}>${icon('upload')}上传 LAP 资料</button></div><div class="lap-mode-bar"><span class="badge">LAP 单词模式 · AI</span><span class="hint">更多模式（如 Vocab）将来加入</span></div>${!state().settings.aiEnabled || !readAIKey() || !state().settings.aiModel ? '<div class="notice">导入、出题和词义批改需要配置 AI。图片需要选择支持视觉的模型。<button class="text-button" data-nav="settings">打开设置 →</button></div>' : ''}
-      ${c ? `<div class="field"><label for="lap-collection">我的 LAP</label><select id="lap-collection" ${job ? 'disabled' : ''}>${collections().map(item => `<option value="${esc(item.id)}" ${item.id === c.id ? 'selected' : ''}>${esc(item.name)} · ${item.entries.length} 个词族</option>`).join('')}</select></div><div class="ai-tabs" role="tablist" aria-label="LAP 学习方式">${[['words','词族表'],['practice','背诵'],['exam','模拟考试']].map(([key,label]) => `<button class="button ${view === key ? 'soft' : ''}" role="tab" aria-selected="${view === key}" data-action="lap-tab" data-view="${key}" ${job ? 'disabled' : ''}>${label}</button>`).join('')}</div>` : ''}<div class="lap-job" id="lap-job" role="status" ${job ? '' : 'hidden'}><span id="lap-job-text">正在处理…</span><button class="text-button" data-action="lap-cancel">取消</button></div><div class="lap-workspace">${c ? view === 'practice' ? renderPractice(c) : view === 'exam' ? renderExam(c) : renderWords(c) : '<div class="empty"><h2>带来你的第一份 LAP</h2><p>上传一份 TXT / PDF / Word 文档或多张词表图片，让 AI 整理各词性的词形和意思，核对后开始背诵与模拟考试。</p><button class="button primary" data-action="lap-import">上传资料</button></div>'}</div></div>`;
+    bridge.main.innerHTML = `<div class="page maple-page"><div class="page-intro"><div><div class="eyebrow">MAPLE LEARNING</div><h1><span aria-hidden="true">🍁</span> 枫叶模式</h1><p>从一张词表，到会拼写、会转换、会表达。</p></div><button class="button primary" data-action="lap-import" ${job ? 'disabled' : ''}>${icon('upload')}导入 LAP 词表</button></div><div class="lap-mode-bar"><span class="badge">LAP 单词模式</span><span class="hint">更多模式（如 Vocab）将来加入</span></div>${!state().settings.aiEnabled || !readAIKey() || !state().settings.aiModel ? '<div class="notice">JSON 导入、听音拼写和词形练习无需 AI；资料识别、模拟卷生成与词义批改需要配置 AI。图片需要选择支持视觉的模型。<button class="text-button" data-nav="settings">打开设置 →</button></div>' : ''}
+      ${c ? `<div class="field"><label for="lap-collection">我的 LAP</label><select id="lap-collection" ${job ? 'disabled' : ''}>${collections().map(item => `<option value="${esc(item.id)}" ${item.id === c.id ? 'selected' : ''}>${esc(item.name)} · ${item.entries.length} 个词族</option>`).join('')}</select></div><div class="ai-tabs" role="tablist" aria-label="LAP 学习方式">${[['words','词族表'],['practice','背诵'],['exam','模拟考试']].map(([key,label]) => `<button class="button ${view === key ? 'soft' : ''}" role="tab" aria-selected="${view === key}" data-action="lap-tab" data-view="${key}" ${job ? 'disabled' : ''}>${label}</button>`).join('')}</div>` : ''}<div class="lap-job" id="lap-job" role="status" ${job ? '' : 'hidden'}><span id="lap-job-text">正在处理…</span><button class="text-button" data-action="lap-cancel">取消</button></div><div class="lap-workspace">${c ? view === 'practice' ? renderPractice(c) : view === 'exam' ? renderExam(c) : renderWords(c) : '<div class="empty"><h2>带来你的第一份 LAP</h2><p>直接上传或粘贴 JSON 词表，无需 AI；也可用 AI 识别文档或图片。核对后开始学习。</p><button class="button primary" data-action="lap-import">上传资料</button></div>'}</div></div>`;
     if (view === 'practice' && c?.practice?.queue[0]?.skill === 'spelling' && !c.practice.feedback && state().settings.autoSpeak && !job) queueMicrotask(() => { if (isPage()) { const e = c.entries.find(e => e.id === c.practice.queue[0]?.entryId); if (e) playWords([e.word]); } });
   }
   async function runJob(work) {
@@ -89,16 +89,34 @@ export function installMaple(bridge) {
     finally { if (job === controller) job = null; if (isPage()) renderPage(); }
   }
   function openImport() {
-    if (!requireAI()) return;
     let source = { text: '', images: [], name: 'LAP 单词' };
-    bridge.openModal('上传 LAP 词表', 'AI 识别已有词形与词性，核对后保存。', `<label class="dropzone" id="lap-drop" for="lap-files">${icon('upload')}<span>选择或拖入一份文档 / 最多 8 张图片</span><input id="lap-files" type="file" accept=".txt,.md,.csv,.tsv,.pdf,.docx,.png,.jpg,.jpeg,.webp" multiple hidden></label><p class="hint">PDF 需含可读取文字；扫描资料请上传 PNG / JPEG / WebP 图片。Word 支持 .docx。单文件 15 MB，合计 30 MB。</p><div class="field"><label for="lap-source-text">也可粘贴词表（保留词性列标题）</label><textarea class="textarea" id="lap-source-text" maxlength="150000"></textarea></div><p class="hint">点击识别才把文字和图片发送到你选择的 AI 服务。PDF / Word 读取器首次需联网加载。原始图片不会保存进词书或备份。</p><div id="lap-import-status" class="ai-document-progress" role="status"></div><div class="modal-foot"><button class="button" data-action="lap-import-cancel">取消</button><button class="button primary" id="lap-recognize">AI 识别词表</button></div>`);
+    bridge.openModal('导入 LAP 词表', 'JSON 直接导入无需 AI；文档与图片可使用 AI 识别。', `<label class="dropzone" id="lap-drop" for="lap-files">${icon('upload')}<span>选择或拖入 JSON / 一份文档 / 最多 8 张图片</span><input id="lap-files" type="file" accept=".json,.txt,.md,.csv,.tsv,.pdf,.docx,.png,.jpg,.jpeg,.webp" multiple hidden></label><p class="hint">PDF 需含可读取文字；扫描资料请上传 PNG / JPEG / WebP 图片。Word 支持 .docx。单文件 15 MB，合计 30 MB。</p><div class="field"><label for="lap-source-text">粘贴 JSON 数组或词表（词表请保留词性列标题）</label><textarea class="textarea" id="lap-source-text" maxlength="150000"></textarea></div><p class="hint">JSON 使用 word、pos、noun、verb、pastTense、adjective、adverb 字段，N/A 表示空白；可选 num、meaning、note。点击“直接导入 JSON”只在本机解析。点击 AI 识别才把文字和图片发送到你选择的 AI 服务。PDF / Word 读取器首次需联网加载。原始图片不会保存进词书或备份。</p><div id="lap-import-status" class="ai-document-progress" role="status"></div><div class="modal-foot"><button class="button" data-action="lap-import-cancel">取消</button><button class="button primary" id="lap-json-import">直接导入 JSON（无需 AI）</button><button class="button" id="lap-recognize">AI 识别词表</button></div>`);
     const status = $('#lap-import-status'), recognize = $('#lap-recognize'), textarea = $('#lap-source-text'), input = $('#lap-files');
     const report = message => { if (status.isConnected) status.textContent = message; };
+    $('#lap-json-import').addEventListener('click', () => {
+      if (importing) return;
+      try {
+        if (source.images.length) throw new Error('图片不能直接导入 JSON，请选择 JSON 文件或仅粘贴 JSON 数组');
+        showEditor(parseLAPJSON(textarea.value, source.name));
+      } catch (error) { report(error.message); }
+    });
     const read = async files => {
       if (importing || !files.length) return;
       source = { text: '', images: [], name: 'LAP 单词' }; textarea.value = '';
       const controller = new AbortController(); importing = controller; recognize.disabled = input.disabled = textarea.disabled = true;
-      try { const result = await readLAPFiles(files, controller.signal, report); if (!controller.signal.aborted && status.isConnected) { source = result; textarea.value = result.text; report(`已读取 ${[...files].map(f => f.name).join('、')}，可点击识别。`); } }
+      try {
+        const selected = [...files];
+        if (selected.some(f => /\.json$/i.test(f.name))) {
+          if (selected.length !== 1) throw new Error('JSON 请一次选择一个文件，不要混合图片或其他文档');
+          if (selected[0].size > 15 * 1024 * 1024) throw new Error('JSON 文件不能超过 15 MB');
+          const json = await selected[0].text();
+          if (controller.signal.aborted || !status.isConnected) return;
+          source.name = selected[0].name.replace(/\.json$/i, '') || 'LAP 单词';
+          textarea.value = json;
+          const result = parseLAPJSON(json, source.name);
+          importing = null; showEditor(result); return;
+        }
+        const result = await readLAPFiles(files, controller.signal, report); if (!controller.signal.aborted && status.isConnected) { source = result; textarea.value = result.text; report(`已读取 ${[...files].map(f => f.name).join('、')}，可点击识别。`); } }
       catch (error) { report(error.name === 'AbortError' ? '已取消' : error.message); }
       finally { if (importing === controller) importing = null; if (recognize.isConnected) recognize.disabled = input.disabled = textarea.disabled = false; }
     };
@@ -106,8 +124,12 @@ export function installMaple(bridge) {
     const drop = $('#lap-drop'); ['dragenter','dragover','dragleave','drop'].forEach(type => drop.addEventListener(type, e => { e.preventDefault(); if (type === 'drop') read(e.dataTransfer.files); }));
     recognize.addEventListener('click', async () => {
       if (importing) return;
-      if (!requireAI()) return;
       source.text = textarea.value.trim();
+      if (source.text.startsWith('[') && !source.images.length) {
+        try { showEditor(parseLAPJSON(source.text, source.name)); } catch (error) { report(error.message); }
+        return;
+      }
+      if (!requireAI()) return;
       if (!source.text && !source.images.length) { report('请先上传或粘贴词表'); return; }
       const controller = new AbortController(); importing = controller; recognize.disabled = input.disabled = textarea.disabled = true;
       try { const result = await extractLAP({ ...state().settings }, source, controller.signal, report); if (controller.signal.aborted || !status.isConnected) return; importing = null; showEditor(result); }
@@ -117,8 +139,8 @@ export function installMaple(bridge) {
   }
   function showEditor(result, existing = null) {
     let entries = structuredClone(result.entries);
-    const cols = [...new Set(['noun','verb','adjective','adverb', ...entries.flatMap(availablePOS)])];
-    bridge.openModal(existing ? '核对 LAP 词族' : '核对 AI 识别结果', '只保存表格中的词形；空白和斜线表示没有对应形式。同格多个形式用 / 分隔。', `<div class="field"><label for="lap-name">LAP 名称</label><input class="input" id="lap-name" maxlength="60" value="${esc(result.name)}"></div>${result.warnings?.length ? `<div class="notice">${result.warnings.map(esc).join('<br>')}</div>` : ''}<p class="hint">${entries.length} 个词族。核对拼写、词性与释义；编辑词形后，对应的背诵进度会重置。既有试卷保存出题时的词表。</p><div class="lap-editor-list">${entries.map((e,n) => `<details class="lap-edit-row" ${entries.length <= 8 ? 'open' : ''}><summary>${n + 1}. ${esc(e.word)} · ${esc(e.meaning)}</summary><div class="field"><label>主词<input class="input" data-lap-edit="word" data-index="${n}" value="${esc(e.word)}" maxlength="100"></label></div><div class="field"><label>词族释义<textarea class="textarea" data-lap-edit="meaning" data-index="${n}" maxlength="2000">${esc(e.meaning)}</textarea></label></div><div class="lap-config-grid">${cols.map(pos => `<div class="field"><label>${POS[pos]}<input class="input" data-lap-edit="${pos}" data-index="${n}" value="${esc(formText(e,pos))}" placeholder="／" maxlength="1500"></label><label>对应释义（按词形顺序，用 / 分隔）<input class="input" data-lap-edit-def="${pos}" data-index="${n}" value="${esc((e.forms[pos] || []).map(f => f.meaning).join(' / '))}" maxlength="2000"></label></div>`).join('')}</div><div class="field"><label>用法 / 核对备注<input class="input" data-lap-edit="note" data-index="${n}" value="${esc(e.note)}" maxlength="2000"></label></div><label class="check-label"><input type="checkbox" data-lap-remove="${n}">移除这个词族</label></details>`).join('')}</div><p class="ai-document-progress" id="lap-editor-error" role="status"></p><div class="modal-foot"><button class="button" data-action="close-modal">取消</button><button class="button primary" id="lap-save">保存 LAP</button></div>`);
+    const cols = [...new Set(['noun','verb','pastTense','adjective','adverb', ...entries.flatMap(availablePOS)])];
+    bridge.openModal(existing ? '核对 LAP 词族' : '核对导入结果', '只保存表格中的词形；空白和斜线表示没有对应形式。同格多个形式用 / 分隔。', `<div class="field"><label for="lap-name">LAP 名称</label><input class="input" id="lap-name" maxlength="60" value="${esc(result.name)}"></div>${result.warnings?.length ? `<div class="notice">${result.warnings.map(esc).join('<br>')}</div>` : ''}<p class="hint">${entries.length} 个词族。核对拼写、词性与释义；没有释义也可保存，稍后补充。编辑词形后，对应的背诵进度会重置。既有试卷保存出题时的词表。</p><div class="lap-editor-list">${entries.map((e,n) => `<details class="lap-edit-row" ${entries.length <= 8 ? 'open' : ''}><summary>${n + 1}. ${esc(e.word)} · ${esc(e.meaning)}</summary><div class="field"><label>主词<input class="input" data-lap-edit="word" data-index="${n}" value="${esc(e.word)}" maxlength="100"></label></div><div class="field"><label>词族释义<textarea class="textarea" data-lap-edit="meaning" data-index="${n}" maxlength="2000">${esc(e.meaning)}</textarea></label></div><div class="lap-config-grid">${cols.map(pos => `<div class="field"><label>${POS[pos]}<input class="input" data-lap-edit="${pos}" data-index="${n}" value="${esc(formText(e,pos))}" placeholder="／" maxlength="1500"></label><label>对应释义（按词形顺序，用 / 分隔）<input class="input" data-lap-edit-def="${pos}" data-index="${n}" value="${esc((e.forms[pos] || []).map(f => f.meaning).join(' / '))}" maxlength="2000"></label></div>`).join('')}</div><div class="field"><label>用法 / 核对备注<input class="input" data-lap-edit="note" data-index="${n}" value="${esc(e.note)}" maxlength="2000"></label></div><label class="check-label"><input type="checkbox" data-lap-remove="${n}">移除这个词族</label></details>`).join('')}</div><p class="ai-document-progress" id="lap-editor-error" role="status"></p><div class="modal-foot"><button class="button" data-action="close-modal">取消</button><button class="button primary" id="lap-save">保存 LAP</button></div>`);
     $('#lap-save').addEventListener('click', () => {
       try {
         const name = $('#lap-name').value.trim(); if (!name) throw new Error('请填写 LAP 名称');
@@ -202,7 +224,7 @@ export function installMaple(bridge) {
     else if (action === 'lap-stop-audio') stopPlayback();
     else if (action === 'lap-play-all') playWords(paper().questions.filter(q => q.section === 'forms').map(q => q.entry.word));
     else if (action === 'lap-question-audio') { const q = paper()?.questions.find(q => q.id === button.dataset.question); if (q) playWords([q.entry.word]); }
-    else if (action === 'lap-practice-start' || action === 'lap-practice-all') { if (!c || !requireAI()) return; c.practice = startPractice(c, action === 'lap-practice-all'); bridge.persist(); if (!c.practice) bridge.toast('当前没有到期项目，可以选择练习全部词族'); renderPage(); }
+    else if (action === 'lap-practice-start' || action === 'lap-practice-all') { if (!c) return; const skills = state().settings.aiEnabled && readAIKey() && state().settings.aiModel ? Object.keys(SKILLS) : ['spelling', 'forms']; c.practice = startPractice(c, action === 'lap-practice-all', Date.now(), skills); bridge.persist(); if (!c.practice) bridge.toast('当前没有到期项目，可以选择练习全部词族'); renderPage(); }
     else if (action === 'lap-practice-audio') { const task = c?.practice?.queue[0], entry = c?.entries.find(e => e.id === task?.entryId); if (entry) playWords([entry.word]); }
     else if (action === 'lap-practice-reveal') await checkPractice(true);
     else if (action === 'lap-practice-next') { const s = c?.practice; if (!s?.feedback) return; const task = s.queue.shift(); if (!s.feedback.correct) s.queue.splice(Math.min(3, s.queue.length), 0, task); s.completed++; s.feedback = null; s.answer = s.queue[0]?.skill === 'spelling' ? '' : {}; bridge.persist(); stopPlayback(); renderPage(); }
