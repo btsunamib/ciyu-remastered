@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { POS, availablePOS, normalizeEntries, parseLAPJSON, mergeEntries, createPaper, checkForms, hasTargetInDefinition, validateGrades, updateProgress, startPractice } from './lap-core.js';
+import { POS, availablePOS, examPOS, examConfig, normalizeMaple, normalizeEntries, parseLAPJSON, mergeEntries, createPaper, checkForms, hasTargetInDefinition, validateGrades, updateProgress, startPractice } from './lap-core.js';
 import { freshState, normalizeState } from './core.js';
 import { backupText, parseBackup } from './storage.js';
 import { modelsURL, fetchModels, saveAIKey } from './ai.js';
@@ -45,31 +45,34 @@ test('LAP 保留多词形与空格，严格识别不完整数据，分段合并�
   assert.throws(() => normalizeEntries([{ word: 'create', meaning: '', forms: {} }], true), /词形/);
   assert.throws(() => normalizeEntries([{ word: 'missing', meaning: '含义', forms: { verb: ['create'] } }], true), /主词/);
 });
-test('默认四类各三题，禁止重复覆盖全卷词族，题目保存独立词表快照', () => {
+test('默认三类各三题，忽略旧释义题配置，禁止重复覆盖全卷词族，题目保存独立词表快照', () => {
   const c = fixture(), p = createPaper(c);
-  assert.equal(p.questions.length, 12); assert.equal(new Set(p.questions.map(q => q.entry.id)).size, 12);
-  for (const section of ['forms','meanings','sentences','corrections']) assert.equal(p.questions.filter(q => q.section === section).length, 3);
+  assert.equal(p.questions.length, 9); assert.equal(new Set(p.questions.map(q => q.entry.id)).size, 9);
+  for (const section of ['forms','sentences','corrections']) assert.equal(p.questions.filter(q => q.section === section).length, 3);
   c.entries.forEach(e => e.meaning = '改过的释义'); assert.equal(p.questions[0].entry.meaning, '准确中文词义');
 });
 test('听写至少三个词性，缺少格子不评分；禁止重复时不足必须报错', () => {
   const c = fixture(4); c.entries.push(...normalizeEntries([{ word: 'cat', meaning: '猫', forms: { noun: ['cat'] } }], true));
   const p = createPaper(c, { forms: 3, meanings: 1, sentences: 1, corrections: 0 });
   assert.ok(p.questions.filter(q => q.section === 'forms').every(q => availablePOS(q.entry).length >= 3));
-  assert.throws(() => createPaper(c), /需要 12/);
+  assert.throws(() => createPaper(c), /需要 9/);
   delete c.entries[0].forms.adjective; delete c.entries[0].forms.adverb;
   assert.throws(() => createPaper(c, { forms: 4, meanings: 0, sentences: 0, corrections: 0 }), /只有 3/);
 });
 test('允许重复仍优先未出现词族，可自定义题数及关闭单一题型', () => {
   const p = createPaper(fixture(2), { forms: 3, meanings: 3, sentences: 0, corrections: 0, repeatWords: true }, () => 0);
-  assert.equal(p.questions.length, 6); assert.notEqual(p.questions[0].entry.id, p.questions[1].entry.id);
+  assert.equal(p.questions.length, 3); assert.notEqual(p.questions[0].entry.id, p.questions[1].entry.id);
   assert.throws(() => createPaper(fixture(), { forms: -1 }), /0–20/);
   assert.throws(() => createPaper(fixture(), { forms: 0, meanings: 0, sentences: 0, corrections: 0 }), /至少/);
 });
-test('词形转换必须拼对全部形式，允许多形式乱序，不接受漏词或额外词', () => {
+test('词形转换接受任意一个正确词形，允许多形式乱序，拒绝空白或夹带错误词', () => {
   const e = fixture(1).entries[0]; e.forms.noun.push({ text: 'creator', meaning: '创造者' });
   const answers = { noun: 'CREATOR / creation', verb: 'create', adjective: 'creative', adverb: 'creatively' };
   assert.ok(checkForms(e, answers).every(c => c.correct));
-  answers.noun = 'creation'; assert.equal(checkForms(e, answers)[0].correct, false);
+  answers.noun = 'creation'; assert.equal(checkForms(e, answers)[0].correct, true);
+  answers.noun = 'CREATOR'; assert.equal(checkForms(e, answers)[0].correct, true);
+  answers.noun = ''; assert.equal(checkForms(e, answers)[0].correct, false);
+  answers.noun = 'cat'; assert.equal(checkForms(e, answers)[0].correct, false);
   answers.noun = 'creation/creator/cat'; assert.equal(checkForms(e, answers)[0].correct, false);
 });
 test('释义自包含按词边界检测并强制零分；AI 漏题、重复和越界评分被拒绝', () => {
@@ -105,12 +108,12 @@ test('随机改错题严格匹配 ID、数量及 LAP 词族，参考不混入学
   });
   await mockAI(() => completion({ questions:[] }), async () => assert.rejects(generateCorrections(settings, p), /数量/));
 });
-test('混合试卷合并精确拼写分与 AI 主观分，空白作答和自指释义为零', async () => {
+test('混合试卷合并词形分与 AI 主观分，空白作答为零', async () => {
   const p = createPaper(fixture(), { forms:1, meanings:1, sentences:1, corrections:1 });
   const forms = p.questions[0]; forms.answer = Object.fromEntries(availablePOS(forms.entry).map(pos => [pos, forms.entry.forms[pos].map(f => f.text).join('/') ]));
-  p.questions[1].answer = p.questions[1].entry.word + ' 就是这个词'; p.questions[2].answer = 'A meaningful sentence.'; p.questions[3].answer = '';
+  p.questions[1].answer = 'A meaningful sentence.'; p.questions[2].answer = '';
   await mockAI((url, body) => completion({ grades:JSON.parse(body.messages[1].content).map(q => ({id:q.id,score:2,feedback:'正确',reference:'参考'})) }), async () => {
-    const r = await gradePaper(settings, p); assert.equal(r.score, 6); assert.equal(r.maxScore, 10); assert.equal(r.grades.length, 4);
+    const r = await gradePaper(settings, p); assert.equal(r.score, 6); assert.equal(r.maxScore, 8); assert.equal(r.grades.length, 3);
   });
 });
 test('词义背诵检查每个已有词性，取消请求后不能落下评分', async () => {
@@ -158,4 +161,73 @@ test('JSON 格式和类型错误给出明确行号，失败不静默丢行或接
   assert.equal(entries[0].meaning, '目标'); assert.equal(entries[0].forms.pastTense[0].text, 'Gained');
   const paper = createPaper({ id: 'json-lap', name: 'LAP', entries }, { forms: 0, meanings: 0, sentences: 1, corrections: 0 }, () => 0.9);
   assert.notEqual(paper.questions[0].pos, 'pastTense');
+});
+
+test('新卷不出过去式或释义，过去式不贡献词性资格及听写分数', async () => {
+  const c = fixture(1), e = c.entries[0];
+  e.forms.pastTense = [{ text: 'created', meaning: '创造了' }];
+  e.forms.noun.push({ text: 'creator', meaning: '创造者' });
+  const p = createPaper(c, { forms: 1, meanings: 20, sentences: 0, corrections: 0 });
+  assert.equal(p.questions.length, 1);
+  assert.equal(p.questions[0].maxScore, 4);
+  assert.ok(!p.columns.includes('pastTense'));
+  assert.notEqual(p.questions[0].pos, 'pastTense');
+  assert.equal(examConfig({ meanings: 20 }).meanings, undefined);
+  p.questions[0].answer = { noun: 'creator', verb: 'create', adjective: 'creative', adverb: 'creatively' };
+  const result = await gradePaper({}, p);
+  assert.equal(result.score, 4); assert.equal(result.maxScore, 4);
+  p.result = result; p.submittedAt = Date.now(); c.papers.push(p);
+  const restored = normalizeMaple({ collections: [c] }).collections[0].papers[0];
+  assert.equal(restored.result.maxScore, 4);
+  assert.ok(!restored.columns.includes('pastTense'));
+  delete e.forms.adjective; delete e.forms.adverb;
+  assert.equal(examPOS(e).length, 2);
+  assert.throws(() => createPaper(c, { forms: 1, sentences: 0, corrections: 0 }), /至少有 3 种词性/);
+});
+
+test('旧未提交试卷移除释义、时态改错和过去式答案，已提交成绩保持原规则', () => {
+  const c = fixture(1), entry = c.entries[0]; entry.forms.pastTense = [{ text: 'created', meaning: '' }];
+  const form = { id: 'form', section: 'forms', entry, pos: 'pastTense', target: entry.forms.pastTense[0], maxScore: 5, answer: { noun: 'creation', pastTense: 'created' } };
+  const meaning = { id: 'meaning', section: 'meanings', entry, pos: 'verb', target: entry.forms.verb[0], maxScore: 2, answer: '含义' };
+  const correction = { id: 'correction', section: 'corrections', entry, pos: 'verb', target: entry.forms.verb[0], maxScore: 2, errorType: 'tense', answer: 'old sentence' };
+  const legacy = { id: 'old', config: { forms: 1, meanings: 1, sentences: 0, corrections: 1 }, questions: [form, meaning, correction] };
+  c.papers.push(legacy);
+  let restored = normalizeMaple({ collections: [c] }).collections[0].papers[0];
+  assert.equal(restored.questions.length, 1); assert.equal(restored.rulesVersion, 2);
+  assert.equal(restored.questions[0].answer.noun, 'creation'); assert.equal(restored.questions[0].answer.pastTense, undefined);
+  assert.equal(restored.questions[0].maxScore, 4); assert.equal(restored.questions[0].pos, 'noun');
+  assert.ok(!restored.columns.includes('pastTense'));
+  legacy.submittedAt = Date.now();
+  legacy.result = { grades: [form, meaning, correction].map(q => ({ id: q.id, score: q.maxScore, feedback: '旧规则正确' })) };
+  restored = normalizeMaple({ collections: [c] }).collections[0].papers[0];
+  assert.equal(restored.questions.length, 3); assert.equal(restored.result.score, 9); assert.equal(restored.rulesVersion, 1);
+});
+
+test('改错生成不发送过去式列或选择时态错误，拒绝模型擅自出时态题', async () => {
+  const c = fixture(1); c.entries[0].forms.pastTense = [{ text: 'created', meaning: '' }];
+  const p = createPaper(c, { forms: 0, sentences: 0, corrections: 1 });
+  await mockAI((url, body) => {
+    const [q] = JSON.parse(body.messages[1].content);
+    assert.equal(q.entry.forms.pastTense, undefined); assert.notEqual(q.errorType, 'tense');
+    assert.match(body.messages[0].content, /不考过去时/);
+    return completion({ questions: [{ id: q.id, sentence: 'She create every day.', corrected: 'They create every day.', explanation: '主谓一致', errorType: 'agreement' }] });
+  }, async () => await generateCorrections(settings, p));
+  await mockAI(() => completion({ questions: [{ id: p.questions[0].id, sentence: 'She create every day.', corrected: 'She created every day.', explanation: '过去时', errorType: 'tense' }] }), async () => assert.rejects(generateCorrections(settings, p), /不符合要求/));
+});
+
+test('造句随机指定已有词性及对应词形，并把指定词性传给批改', async () => {
+  const c = fixture(1); c.entries[0].forms.pastTense = [{ text: 'created', meaning: '' }];
+  const selected = [0, 0.3, 0.6, 0.9].map(r => createPaper(c, { forms: 0, sentences: 1, corrections: 0 }, () => r).questions[0]);
+  assert.deepEqual(selected.map(q => q.pos), ['noun', 'verb', 'adjective', 'adverb']);
+  for (const q of selected) {
+    assert.ok(q.entry.forms[q.pos].some(f => f.text === q.target.text));
+    assert.notEqual(q.pos, 'pastTense');
+  }
+  const q = selected[2]; q.answer = 'This is a creative idea.';
+  await mockAI((url, body) => {
+    const [question] = JSON.parse(body.messages[1].content);
+    assert.equal(question.pos, 'adjective'); assert.equal(question.target.text, 'creative');
+    assert.match(body.messages[0].content, /指定 pos/);
+    return completion({ grades: [{ id: q.id, score: 2, feedback: '按指定形容词造句正确' }] });
+  }, async () => assert.equal((await gradePaper(settings, { questions: [q] })).score, 2));
 });

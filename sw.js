@@ -1,4 +1,4 @@
-const SHELL = 'ciyu-remastered-shell-20261005-immersive-1';
+const SHELL = 'ciyu-remastered-shell-20261006-exam-forms-1';
 const AUDIO = 'ciyu-remastered-audio-v1';
 const FILES = ['./', './index.html', './style.css', './customize.css', './lap.css', './lap-core.js', './lap-ai.js', './lap-ui.js', './ai.js', './ai-ui.js', './appearance.js', './icon.svg', './manifest.webmanifest', './app.js', './core.js', './storage.js', './audio.js', './icons.js'];
 self.addEventListener('install', event => { event.waitUntil(caches.open(SHELL).then(cache => cache.addAll(FILES)).then(() => self.skipWaiting())); });

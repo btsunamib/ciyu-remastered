@@ -1,11 +1,12 @@
 // LAP data is separate from ordinary word books, but lives in the same backup.
 export const POS = { noun: '名词 n.', verb: '动词 v.', pastTense: '过去式', adjective: '形容词 adj.', adverb: '副词 adv.', pronoun: '代词 pron.', preposition: '介词 prep.', conjunction: '连词 conj.', determiner: '限定词 det.', interjection: '感叹词 interj.', numeral: '数词 num.' };
 export const SKILLS = { spelling: '听音拼写', forms: '词性转换', meaning: '词义回忆' };
-export const DEFAULT_EXAM = { forms: 3, meanings: 3, sentences: 3, corrections: 3, repeatWords: false };
+export const DEFAULT_EXAM = { forms: 3, sentences: 3, corrections: 3, repeatWords: false };
 const id = () => globalThis.crypto?.randomUUID?.() || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 const text = (value, limit = 2000) => typeof value === 'string' ? value.trim().slice(0, limit) : '';
 export const spelling = value => text(value).toLowerCase().replace(/[’‘]/g, "'").replace(/\s+/g, ' ');
 export const availablePOS = entry => Object.keys(POS).filter(pos => entry.forms?.[pos]?.length);
+export const examPOS = entry => availablePOS(entry).filter(pos => pos !== 'pastTense');
 export function normalizeEntries(raw, strict = false) {
   if (!Array.isArray(raw)) throw new Error('没有得到 LAP 词族列表');
   const entries = [], seen = new Set();
@@ -87,7 +88,7 @@ export function parseLAPJSON(source, name = 'LAP 单词') {
 }
 export function examConfig(raw = {}) {
   const result = { repeatWords: raw.repeatWords === true };
-  for (const section of ['forms', 'meanings', 'sentences', 'corrections']) {
+  for (const section of ['forms', 'sentences', 'corrections']) {
     const value = raw[section] === undefined ? DEFAULT_EXAM[section] : Number(raw[section]);
     if (!Number.isInteger(value) || value < 0 || value > 20) throw new Error('每类题数需要是 0–20 的整数');
     result[section] = value;
@@ -102,34 +103,36 @@ function shuffled(list, random) {
 }
 export function createPaper(collection, rawConfig, random = Math.random) {
   const config = examConfig(rawConfig), entries = collection.entries;
-  const eligible = entries.filter(e => availablePOS(e).length >= 3);
+  const usable = entries.filter(e => examPOS(e).length);
+  const eligible = usable.filter(e => examPOS(e).length >= 3);
   if (config.forms && !eligible.length) throw new Error('听写词性转换题需要至少有 3 种词性的词族');
   if (!config.repeatWords && eligible.length < config.forms) throw new Error(`听写需要 ${config.forms} 个至少有 3 种词性的词族，当前只有 ${eligible.length} 个`);
-  const count = ['forms', 'meanings', 'sentences', 'corrections'].reduce((sum, s) => sum + config[s], 0);
-  if (!entries.length || !config.repeatWords && entries.length < count) throw new Error(`禁止重复时需要 ${count} 个不同词族，当前只有 ${entries.length} 个；请减少题数或允许重复`);
+  const count = ['forms', 'sentences', 'corrections'].reduce((sum, s) => sum + config[s], 0);
+  if (!usable.length || !config.repeatWords && usable.length < count) throw new Error(`禁止重复时需要 ${count} 个含词性形式的不同词族，当前只有 ${usable.length} 个；请减少题数或允许重复`);
   const used = new Set(), questions = [];
-  const columns = [...new Set(entries.flatMap(availablePOS))];
-  for (const section of ['forms', 'meanings', 'sentences', 'corrections']) {
-    const source = section === 'forms' ? eligible : entries;
+  const columns = [...new Set(usable.flatMap(examPOS))];
+  for (const section of ['forms', 'sentences', 'corrections']) {
+    const source = section === 'forms' ? eligible : usable;
     let pool = [];
     for (let n = 0; n < config[section]; n++) {
       if (!pool.length) pool = [...shuffled(source.filter(e => !used.has(e.id)), random), ...(config.repeatWords ? shuffled(source.filter(e => used.has(e.id)), random) : [])];
       const entry = pool.shift(); if (!entry) throw new Error('可用词族不足，请调整题数');
       used.add(entry.id);
-      const choices = availablePOS(entry).filter(pos => section === 'forms' || pos !== 'pastTense');
+      const choices = examPOS(entry);
       if (!choices.length) throw new Error(`词族“${entry.word}”只有过去式，不能用于此类题目，请补充词性形式`);
       const pos = choices[Math.floor(random() * choices.length)];
       const target = entry.forms[pos][Math.floor(random() * entry.forms[pos].length)];
-      questions.push({ id: id(), section, entry: structuredClone(entry), pos, target: structuredClone(target), maxScore: section === 'forms' ? availablePOS(entry).length : 2, answer: section === 'forms' ? {} : '' });
+      questions.push({ id: id(), section, entry: structuredClone(entry), pos, target: structuredClone(target), maxScore: section === 'forms' ? examPOS(entry).length : 2, answer: section === 'forms' ? {} : '' });
     }
   }
-  return { id: id(), collectionId: collection.id, name: collection.name, createdAt: Date.now(), config, columns, questions, submittedAt: null, result: null };
+  return { id: id(), rulesVersion: 2, collectionId: collection.id, name: collection.name, createdAt: Date.now(), config, columns, questions, submittedAt: null, result: null };
 }
-export function checkForms(entry, answers, cols = availablePOS(entry)) {
+export function checkForms(entry, answers, cols = availablePOS(entry), allForms = false) {
   return cols.map(pos => {
     const expected = entry.forms[pos].map(f => spelling(f.text)).sort();
     const actual = [...new Set(text(answers?.[pos]).split(/[,;，；/\n]+/).map(spelling).filter(Boolean))].sort();
-    return { pos, correct: expected.length === actual.length && expected.every((f, i) => f === actual[i]), expected: entry.forms[pos].map(f => f.text).join(' / ') };
+    const correct = allForms ? expected.length === actual.length && expected.every((f, i) => f === actual[i]) : actual.length > 0 && actual.every(f => expected.includes(f));
+    return { pos, correct, expected: entry.forms[pos].map(f => f.text).join(' / ') };
   });
 }
 export function hasTargetInDefinition(answer, entry) {
@@ -180,17 +183,23 @@ export function normalizeMaple(raw) {
     try { collection.examConfig = examConfig(value.examConfig); } catch { collection.examConfig = { ...DEFAULT_EXAM }; }
     for (const p of (Array.isArray(value.papers) ? value.papers.slice(-20) : [])) {
       try {
-        const config = examConfig(p.config);
         if (!Array.isArray(p.questions) || p.questions.length > 80 || !p.questions.length) continue;
         const ids = new Set();
-        const questions = p.questions.map(q => {
+        // Unfinished legacy papers adopt current rules; submitted papers keep their historical scores.
+        const archived = !!p.submittedAt && p.rulesVersion !== 2;
+        const config = archived ? { repeatWords: p.config?.repeatWords === true, ...Object.fromEntries(['forms','meanings','sentences','corrections'].map(s => [s, p.questions.filter(q => q?.section === s).length])) } : examConfig(p.config);
+        const questions = p.questions.filter(q => archived || q.section !== 'meanings' && !(q.section === 'corrections' && q.errorType === 'tense')).map(q => {
           const entry = normalizeEntries([q.entry], true)[0];
           if (!q.id || ids.has(q.id) || !['forms','meanings','sentences','corrections'].includes(q.section) || !entry.forms[q.pos]?.some(f => f.text === q.target?.text)) throw new Error('无效题目');
           ids.add(q.id);
-          if (q.section === 'forms' && availablePOS(entry).length < 3) throw new Error('无效听写题');
-          return { id: text(q.id, 100), section: q.section, entry, pos: q.pos, target: { text: text(q.target.text, 100), meaning: text(q.target.meaning) }, maxScore: q.section === 'forms' ? availablePOS(entry).length : 2, answer: q.section === 'forms' ? Object.fromEntries(availablePOS(entry).map(pos => [pos, text(q.answer?.[pos])])) : text(q.answer, 4000), sentence: text(q.sentence, 2000), corrected: text(q.corrected, 2000), explanation: text(q.explanation), errorType: text(q.errorType, 100) };
+          const cols = archived ? availablePOS(entry) : examPOS(entry);
+          if (!cols.length) throw new Error('无效词性题');
+          const pos = !archived && q.pos === 'pastTense' ? cols[0] : q.pos;
+          const target = pos === q.pos ? q.target : entry.forms[pos][0];
+          return { id: text(q.id, 100), section: q.section, entry, pos, target: { text: text(target.text, 100), meaning: text(target.meaning) }, maxScore: q.section === 'forms' ? cols.length : 2, answer: q.section === 'forms' ? Object.fromEntries(cols.map(pos => [pos, text(q.answer?.[pos])])) : text(q.answer, 4000), sentence: text(q.sentence, 2000), corrected: text(q.corrected, 2000), explanation: text(q.explanation), errorType: text(q.errorType, 100) };
         });
-        const paper = { id: text(p.id, 100) || id(), collectionId, name: text(p.name, 60) || collection.name, createdAt: Number(p.createdAt) || Date.now(), config, columns: [...new Set(questions.flatMap(q => availablePOS(q.entry)))], questions, submittedAt: Number(p.submittedAt) || null, result: null };
+        if (!questions.length) continue;
+        const paper = { id: text(p.id, 100) || id(), rulesVersion: archived ? 1 : 2, collectionId, name: text(p.name, 60) || collection.name, createdAt: Number(p.createdAt) || Date.now(), config, columns: [...new Set(questions.flatMap(q => archived ? availablePOS(q.entry) : examPOS(q.entry)))], questions, submittedAt: Number(p.submittedAt) || null, result: null };
         if (p.result?.grades) { const grades = validateGrades(p.result.grades, questions); paper.result = { grades, score: grades.reduce((s,g) => s + g.score, 0), maxScore: grades.reduce((s,g) => s + g.maxScore, 0) }; }
         collection.papers.push(paper);
       } catch { /* Invalid imported papers do not erase the vocabulary collection. */ }
