@@ -1,6 +1,7 @@
 import { uid, bookById, wordById, importEntries, shuffle } from './core.js';
 import { requestAI, createExample, createStory, readStudyDocument, extractVocabulary, readAIKey, saveAIKey, remembersAIKey, completionURL, documentChunks, fetchModels } from './ai.js';
 import { icon } from './icons.js';
+import { installStudyChat } from './study-chat.js';
 
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const $ = selector => document.querySelector(selector);
@@ -30,13 +31,14 @@ export function installAI(bridge) {
   }
   const configured = () => state().settings.aiEnabled && !!readAIKey();
   const contextWord = () => { const context = bridge.getStudyContext(); return context && { bookId: context.item.bookId, word: wordById(state(), context.item.bookId, context.item.wordIds[0]), ...context }; };
+  const studyChat = installStudyChat({ ...bridge, getContext: contextWord });
   const currentBook = () => bookById(state(), bookId) || state().books[0];
   const selectedWords = () => (currentBook()?.words || []).filter(w => selected.has(w.id));
   function requireConfiguration() {
     if (configured()) return true;
     bridge.toast(state().settings.aiEnabled ? '先填写 API 密钥，再使用 AI 学习' : '先在设置中打开 AI 学习助手'); bridge.navigate('settings'); return false;
   }
-  function cancelAll() { modelsAbort?.abort(); documentAbort?.abort(); pageAbort?.abort(); for (const job of inlineJobs.values()) job.abort(); inlineJobs.clear(); }
+  function cancelAll() { studyChat.cancelAll(); modelsAbort?.abort(); documentAbort?.abort(); pageAbort?.abort(); for (const job of inlineJobs.values()) job.abort(); inlineJobs.clear(); }
   function navigation() { document.documentElement.dataset.ai = state().settings.aiEnabled ? 'on' : 'off'; document.querySelectorAll('[data-ai-nav]').forEach(node => { node.hidden = !state().settings.aiEnabled; }); }
   function settingsHTML() {
     const s = state().settings;
@@ -75,7 +77,7 @@ export function installAI(bridge) {
     const visibleId = inlineVisible.get(`${item.bookId}/${word.id}`);
     const material = (state().aiMaterials || []).find(m => m.id === visibleId && m.words.includes(word.en)) || [...(state().aiMaterials || [])].reverse().find(m => m.kind === 'example' && m.bookId === item.bookId && m.wordIds.includes(word.id) && m.words.includes(word.en));
     const busy = inlineJobs.has(`${item.bookId}/${word.id}`);
-    return `<section class="ai-panel study-ai" data-study-item="${esc(item.id)}"><div class="ai-inline-actions"><button class="button soft compact" data-action="ai-inline-example" ${busy ? 'disabled' : ''}>${icon('sparkle')}${busy ? '正在生成…' : material ? '换个例句' : '为本词造句'}</button><button class="button compact" data-action="ai-inline-story" ${busy ? 'disabled' : ''}>编个小故事</button><button class="button compact" data-action="ai-inline-chat">问问 AI</button>${busy ? '<button class="text-button" data-action="ai-inline-cancel">取消</button>' : ''}</div><div id="study-ai-result">${material ? materialHTML(material) : '<p class="hint">用一个场景，把表达记牢。</p>'}</div></section>`;
+    return `<section class="ai-panel study-ai" data-study-item="${esc(item.id)}"><div class="ai-inline-actions"><button class="button soft compact" data-action="ai-inline-example" ${busy ? 'disabled' : ''}>${icon('sparkle')}${busy ? '正在生成…' : material ? '换个例句' : '为本词造句'}</button><button class="button compact" data-action="ai-inline-story" ${busy ? 'disabled' : ''}>编个小故事</button><button class="button compact" data-action="ai-inline-chat" aria-controls="study-chat" aria-expanded="false">问问 AI</button>${busy ? '<button class="text-button" data-action="ai-inline-cancel">取消</button>' : ''}</div><div id="study-ai-result">${material ? materialHTML(material) : '<p class="hint">用一个场景，把表达记牢。</p>'}</div></section>`;
   }
   document.addEventListener('ciyu-ai-stream', e => {
     const {content,reasoningCount,signal,json} = e.detail; if (!json || signal?.aborted) return;
@@ -87,7 +89,7 @@ export function installAI(bridge) {
   });
   function refreshStudy() {
     const context = bridge.getStudyContext(); if (!context) return;
-    const old = $('.study-ai'); if (old) old.outerHTML = studyHTML(context.session, context.item);
+    const old = $('.study-ai'); if (old) old.outerHTML = studyHTML(context.session, context.item); studyChat.sync();
   }
   async function inlineGenerate(kind) {
     const context = contextWord(); if (!context?.word || !requireConfiguration()) return;
@@ -206,7 +208,7 @@ export function installAI(bridge) {
     else if (action === 'ai-inline-example') await inlineGenerate('example');
     else if (action === 'ai-inline-story') await inlineGenerate('story');
     else if (action === 'ai-inline-cancel') { const context = contextWord(); if (context?.word) inlineJobs.get(`${context.bookId}/${context.word.id}`)?.abort(); }
-    else if (action === 'ai-inline-chat') { const context = contextWord(); if (context?.word) { bookId = context.bookId; selected = new Set([context.word.id]); tab = 'chat'; bridge.navigate('ai'); } }
+    else if (action === 'ai-inline-chat') studyChat.toggle();
     else if (action === 'ai-open-word') { bookId = button.dataset.book; selected = new Set([button.dataset.word]); tab = 'story'; bridge.closeModal(); bridge.navigate('ai'); }
     else if (action === 'ai-tab') { pageAbort?.abort(); tab = button.dataset.tab; renderPage(); }
     else if (action === 'ai-random') { selected = new Set(shuffle(currentBook()?.words || []).slice(0, 5).map(w => w.id)); renderWordPicker(); }
@@ -234,5 +236,5 @@ export function installAI(bridge) {
   });
   document.addEventListener('submit', event => { if (event.target.id === 'ai-chat-form') { event.preventDefault(); ask(); } });
   document.addEventListener('keydown', event => { if (event.target.id === 'ai-chat-input' && event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); ask(); } });
-  return { settingsHTML, studyHTML, renderPage, navigation, cancelAll, saveAIKey, onNavigate: () => { pageAbort?.abort(); modelsAbort?.abort(); } };
+  return { settingsHTML, studyHTML, renderPage, navigation, cancelAll, saveAIKey, syncStudyChat: studyChat.sync, onNavigate: () => { studyChat.close({ cancel: true, restoreFocus: false }); pageAbort?.abort(); modelsAbort?.abort(); } };
 }

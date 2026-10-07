@@ -341,6 +341,7 @@ function renderSession(key, options = {}) {
     <div class="session-stats"><span>完成 <b>${progress}</b> / ${session.initialTotal}${session.mode === 'audit' ? ' · 本书全部词汇' : ` · 本组 ${session.active.length} 项`}</span><span>待加入 <b>${session.queue.length}</b> · 答对 <b>${session.right}</b> · 答错 <b>${session.wrong}</b></span></div>
     <div class="study-card" id="study-card" aria-live="polite">${feedback ? answerContent(session, item) : questionContent(session, item)}${ai.studyHTML(session, item)}</div>
     <div class="session-actions">${sessionActions(session)}</div><p class="session-help">${caption}</p></section>`;
+  ai.syncStudyChat();
   if (!feedback && $('#answer-input')) {
     $('#answer-input').focus({ preventScroll: true });
     $('#answer-input').setSelectionRange?.(session.input.length, session.input.length);
