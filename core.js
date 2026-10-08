@@ -15,7 +15,7 @@ export const DEFAULT_SETTINGS = {
   batch: 12, gap: 7, wrongGap: 3, target: 3, mixOld: false, mixEvery: 5, mixCount: 2,
   autoSpeak: true, autoSpeakZh: true, rate: 0.95, accent: 'uk', zhVoiceURI: '', audioTemplate: '',
   theme: 'auto', background: null,
-  aiEnabled: false, aiBase: 'https://api.openai.com/v1', aiModel: 'gpt-4.1-mini', aiLevel: 'B1', aiJsonMode: false, aiStream: false, aiThinking: 'auto', aiThinkingFormat: 'auto', dailyGoal: 20,
+  aiEnabled: false, aiNoKey: false, aiProvider: 'custom', aiBase: 'https://api.openai.com/v1', aiModel: 'gpt-4.1-mini', aiLevel: 'B1', aiJsonMode: false, aiStream: false, aiThinking: 'auto', aiThinkingFormat: 'auto', dailyGoal: 20,
   uiPalette: 'iris', uiCustom: false, uiAccent: '#5666eb', uiBackground: '#f7f8fc', uiSurface: '#ffffff', uiText: '#252b43',
   uiFont: 'sans', uiScale: 100, uiRadius: 20, uiCardWidth: 580, uiLayout: 'sidebar', uiDensity: 'comfortable', uiMotion: true, uiSelection: false
 };
@@ -38,11 +38,11 @@ export function sanitizeSettings(input = {}) {
   for (const [key, min, max] of [['dailyGoal', 1, 1000], ['batch', 5, 30], ['gap', 1, 30], ['wrongGap', 1, 8], ['target', 2, 5], ['mixEvery', 1, 50], ['mixCount', 1, 5]]) {
     result[key] = Math.min(max, Math.max(min, Math.round(Number(input[key]) || result[key])));
   }
-  for (const key of ['mixOld', 'autoSpeak', 'autoSpeakZh', 'aiEnabled', 'aiJsonMode', 'aiStream', 'uiCustom', 'uiMotion', 'uiSelection']) if (typeof input[key] === 'boolean') result[key] = input[key];
+  for (const key of ['mixOld', 'autoSpeak', 'autoSpeakZh', 'aiEnabled', 'aiNoKey', 'aiJsonMode', 'aiStream', 'uiCustom', 'uiMotion', 'uiSelection']) if (typeof input[key] === 'boolean') result[key] = input[key];
   for (const [key, min, max] of [['uiScale', 85, 125], ['uiRadius', 4, 32], ['uiCardWidth', 360, 820]]) result[key] = Math.min(max, Math.max(min, Number(input[key]) || result[key]));
   for (const key of ['uiAccent', 'uiBackground', 'uiSurface', 'uiText']) if (/^#[0-9a-f]{6}$/i.test(input[key] || '')) result[key] = input[key];
-  for (const [key, choices] of [['aiThinking', ['auto','on','off']], ['aiThinkingFormat',['auto','thinking','enable_thinking','reasoning_effort']], ['uiPalette', ['iris', 'forest', 'sand', 'rose', 'ocean', 'grape']], ['uiFont', ['sans', 'serif', 'rounded']], ['uiLayout', ['sidebar', 'top']], ['uiDensity', ['comfortable', 'compact']], ['aiLevel', ['A2', 'B1', 'B2', 'C1']]]) if (choices.includes(input[key])) result[key] = input[key];
-  if (typeof input.aiBase === 'string' && input.aiBase.length < 500) { try { const url = new URL(input.aiBase); if (url.protocol === 'https:' && !url.username && !url.password && !url.search && !url.hash) result.aiBase = url.href.replace(/\/$/, ''); } catch {} }
+  for (const [key, choices] of [['aiProvider', ['custom','ollama']], ['aiThinking', ['auto','on','off']], ['aiThinkingFormat',['auto','thinking','enable_thinking','reasoning_effort']], ['uiPalette', ['iris', 'forest', 'sand', 'rose', 'ocean', 'grape']], ['uiFont', ['sans', 'serif', 'rounded']], ['uiLayout', ['sidebar', 'top']], ['uiDensity', ['comfortable', 'compact']], ['aiLevel', ['A2', 'B1', 'B2', 'C1']]]) if (choices.includes(input[key])) result[key] = input[key];
+  if (typeof input.aiBase === 'string' && input.aiBase.length < 500) { try { const url = new URL(input.aiBase); if (['https:','http:'].includes(url.protocol) && !url.username && !url.password && !url.search && !url.hash) result.aiBase = url.href.replace(/\/$/, ''); } catch {} }
   if (typeof input.aiModel === 'string') result.aiModel = input.aiModel.trim().slice(0, 160);
   result.rate = Math.min(1.3, Math.max(0.6, Number(input.rate) || 0.95));
   result.accent = input.accent === 'us' ? 'us' : 'uk';

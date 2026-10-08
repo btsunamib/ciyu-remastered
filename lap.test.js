@@ -29,7 +29,8 @@ const completion = data => ({ choices: [{ message: { content: JSON.stringify(dat
 test('模型列表由基础地址或完整对话接口推导，不接受不安全地址', async () => {
   assert.equal(modelsURL('https://mock.example/v1/chat/completions/'), 'https://mock.example/v1/models');
   assert.equal(modelsURL('https://api.deepseek.com'), 'https://api.deepseek.com/models');
-  assert.throws(() => modelsURL('http://mock.example/v1'));
+  assert.equal(modelsURL('http://mock.example/v1'), 'http://mock.example/v1/models');
+  assert.throws(() => modelsURL('ftp://mock.example/v1'));
   assert.throws(() => modelsURL('https://key:secret@mock.example/v1'));
   await mockAI((url, body, options) => {
     assert.equal(url, settings.aiBase + '/models'); assert.equal(body, null); assert.equal(options.credentials, 'omit');

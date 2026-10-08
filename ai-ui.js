@@ -1,5 +1,5 @@
-import { uid, bookById, wordById, importEntries, shuffle } from './core.js';
-import { requestAI, createExample, createStory, readStudyDocument, extractVocabulary, readAIKey, saveAIKey, remembersAIKey, completionURL, documentChunks, fetchModels } from './ai.js';
+import { uid, sanitizeSettings, bookById, wordById, importEntries, shuffle } from './core.js';
+import { requestAI, createExample, createStory, readStudyDocument, extractVocabulary, readAIKey, saveAIKey, remembersAIKey, completionURL, documentChunks, fetchModels, canAuthenticateAI, aiReady } from './ai.js';
 import { icon } from './icons.js';
 import { installStudyChat } from './study-chat.js';
 
@@ -29,32 +29,51 @@ export function installAI(bridge) {
     } catch (error) { if (!controller.signal.aborted && status.isConnected) status.textContent = error.message; }
     finally { if (modelsAbort === controller) { modelsAbort = null; if (select.isConnected) select.disabled = false; } }
   }
-  const configured = () => state().settings.aiEnabled && !!readAIKey();
+  const configured = () => aiReady(state().settings);
   const contextWord = () => { const context = bridge.getStudyContext(); return context && { bookId: context.item.bookId, word: wordById(state(), context.item.bookId, context.item.wordIds[0]), ...context }; };
   const studyChat = installStudyChat({ ...bridge, getContext: contextWord });
   const currentBook = () => bookById(state(), bookId) || state().books[0];
   const selectedWords = () => (currentBook()?.words || []).filter(w => selected.has(w.id));
   function requireConfiguration() {
     if (configured()) return true;
-    bridge.toast(state().settings.aiEnabled ? '先填写 API 密钥，再使用 AI 学习' : '先在设置中打开 AI 学习助手'); bridge.navigate('settings'); return false;
+    bridge.toast(state().settings.aiEnabled ? '先配置 API 接口并选择模型；本地服务可留空密钥' : '先在设置中打开 AI 学习助手'); bridge.navigate('settings'); return false;
+  }
+  async function saveConfiguration() {
+    const button = $('[data-action="ai-save-config"]'), status = $('#ai-save-status');
+    if (!button || button.disabled) return;
+    try {
+      const base = $('#ai-base').value.trim(); completionURL(base);
+      const values = { ...state().settings, aiBase: base, aiModel: $('#ai-model').value, aiNoKey: $('#ai-no-key').checked };
+      for (const field of document.querySelectorAll('.ai-settings [data-setting]')) {
+        if (field.id === 'ai-base' || field.id === 'ai-model') continue;
+        values[field.dataset.setting] = field.type === 'checkbox' ? field.checked : field.value;
+      }
+      state().settings = sanitizeSettings(values);
+      const keySaved = saveAIKey($('#ai-key').value, $('#ai-remember-key').checked);
+      button.disabled = true; status.textContent = '正在保存…';
+      const saved = await bridge.persist();
+      status.textContent = saved === false ? '配置尚未写入，请重试。' : 'API 配置已保存，刷新后仍可使用。';
+      if (!keySaved && $('#ai-key').value.trim()) status.textContent += ' 密钥仅在当前页面可用，浏览器未能保存密钥，请重试。';
+    } catch (error) { status.textContent = error.message; }
+    finally { button.disabled = false; }
   }
   function cancelAll() { studyChat.cancelAll(); modelsAbort?.abort(); documentAbort?.abort(); pageAbort?.abort(); for (const job of inlineJobs.values()) job.abort(); inlineJobs.clear(); }
   function navigation() { document.documentElement.dataset.ai = state().settings.aiEnabled ? 'on' : 'off'; document.querySelectorAll('[data-ai-nav]').forEach(node => { node.hidden = !state().settings.aiEnabled; }); }
   function settingsHTML() {
     const s = state().settings;
     if (modelsBase !== s.aiBase || modelsKey !== readAIKey()) models = [];
-    if (s.aiEnabled && readAIKey()) queueMicrotask(refreshModels);
+    if (s.aiEnabled && canAuthenticateAI(s)) queueMicrotask(refreshModels);
     return `<section class="panel ai-settings"><div class="panel-head">${icon('sparkle')}<h2>AI 学习助手</h2></div>
       <div class="setting-row"><div><h3>开启 AI 功能</h3><p>默认关闭。开启后可造句、编故事、问答和整理文档。</p></div><label class="toggle"><input type="checkbox" data-setting="aiEnabled" aria-label="开启 AI 功能" ${s.aiEnabled ? 'checked' : ''}><span></span></label></div>
       <div id="ai-settings-fields" ${s.aiEnabled ? '' : 'hidden'}>
-      <div class="ai-provider-buttons"><button class="button compact" data-action="ai-provider" data-provider="openai">OpenAI</button><button class="button compact" data-action="ai-provider" data-provider="deepseek">DeepSeek</button><span class="hint">也可填写其他兼容接口</span></div>
-      <div class="field"><label for="ai-base">API 地址</label><input class="input" id="ai-base" data-setting="aiBase" type="url" value="${esc(s.aiBase)}" placeholder="https://你的服务地址/v1" autocapitalize="none" spellcheck="false"><p class="hint">支持 OpenAI Chat Completions 格式；完整 /chat/completions 地址也可用。</p></div>
-      <div class="field"><label for="ai-model">选择模型</label><div class="ai-key-row"><select id="ai-model" data-setting="aiModel" aria-describedby="ai-model-status"><option value="">先获取模型列表</option>${(models.length ? models : s.aiModel ? [s.aiModel] : []).map(id => `<option value="${esc(id)}" ${id === s.aiModel ? 'selected' : ''}>${esc(id)}</option>`).join('')}</select><button class="button compact" data-action="ai-model-refresh">获取 / 刷新列表</button></div><p class="hint" id="ai-model-status" role="status">填写密钥后自动获取，也可手动刷新。列表来自当前接口的 /models。</p></div>
-      <div class="field"><label for="ai-key">API 密钥</label><div class="ai-key-row"><input class="input" type="password" id="ai-key" value="${esc(readAIKey())}" placeholder="粘贴你的密钥" autocomplete="off" autocapitalize="none" spellcheck="false"><button class="button compact" data-action="ai-clear-key">清除</button></div><label class="check-label"><input id="ai-remember-key" type="checkbox" ${remembersAIKey() ? 'checked' : ''}>在这台设备记住密钥</label><p class="hint">密钥不会写入词书备份。未勾选时只保留在当前浏览器会话。请求直接发送到你填写的服务，使用该服务的额度。</p></div>
+      <div class="ai-provider-buttons"><button class="button compact" data-action="ai-provider" data-provider="openai">OpenAI</button><button class="button compact" data-action="ai-provider" data-provider="deepseek">DeepSeek</button><button class="button compact" data-action="ai-provider" data-provider="ollama">本地 Ollama</button><span class="hint">也可填写其他兼容接口</span></div>
+      <div class="field"><label for="ai-base">API 地址</label><input class="input" id="ai-base" data-setting="aiBase" type="url" value="${esc(s.aiBase)}" placeholder="https://你的服务地址/v1" autocapitalize="none" spellcheck="false"><p class="hint">支持 HTTP / HTTPS、OpenAI Chat Completions 格式。Ollama 通常填 http://localhost:11434/v1；完整 /chat/completions 地址也可用。</p></div>
+      <div class="field"><label for="ai-model">选择模型</label><div class="ai-key-row"><select id="ai-model" data-setting="aiModel" aria-describedby="ai-model-status"><option value="">先获取模型列表</option>${(models.length ? models : s.aiModel ? [s.aiModel] : []).map(id => `<option value="${esc(id)}" ${id === s.aiModel ? 'selected' : ''}>${esc(id)}</option>`).join('')}</select><button class="button compact" data-action="ai-model-refresh">获取 / 刷新列表</button></div><p class="hint" id="ai-model-status" role="status">远程服务填写密钥后自动获取；本地服务无需密钥。列表来自当前接口的 /models。</p></div>
+      <div class="field"><label for="ai-key">API 密钥</label><div class="ai-key-row"><input class="input" type="password" id="ai-key" value="${esc(readAIKey())}" placeholder="粘贴你的密钥" autocomplete="off" autocapitalize="none" spellcheck="false"><button class="button compact" data-action="ai-clear-key">清除</button></div><label class="check-label"><input type="checkbox" data-setting="aiNoKey" id="ai-no-key" ${s.aiNoKey ? 'checked' : ''}>此接口无需密钥（Ollama / 本地服务）</label><label class="check-label"><input id="ai-remember-key" type="checkbox" ${remembersAIKey() ? 'checked' : ''}>在这台设备记住密钥</label><p class="hint">密钥不会写入词书备份。未勾选时只保留在当前浏览器会话。请求直接发送到你填写的服务，使用该服务的额度。</p></div>
       <div class="setting-row"><div><h3>内容难度</h3><p>用于生成例句和小故事。</p></div><select data-setting="aiLevel" aria-label="AI 内容难度">${[['A2','A2 · 简单日常'],['B1','B1 · 易读实用'],['B2','B2 · 雅思进阶'],['C1','C1 · 丰富表达']].map(([v,l]) => `<option value="${v}" ${s.aiLevel === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
       <div class="setting-row"><div><h3>流式输出</h3><p>逐步接收正文；收到正文或思考 token 后不再使用 90 秒超时，可手动取消。</p></div><label class="switch"><input type="checkbox" data-setting="aiStream" ${s.aiStream ? 'checked' : ''}><span></span></label></div><div class="setting-row"><div><h3>思考模式</h3><p>需所选模型支持切换。</p></div><select data-setting="aiThinking" aria-label="思考模式">${[['auto','跟随模型'],['on','思考'],['off','不思考']].map(([v,l])=>`<option value="${v}" ${s.aiThinking===v?'selected':''}>${l}</option>`).join('')}</select></div>
       <details class="format-help"><summary>接口兼容选项</summary><label>思考开关接口<select data-setting="aiThinkingFormat">${[['auto','自动匹配'],['thinking','DeepSeek · thinking'],['enable_thinking','Qwen / 兼容服务 · enable_thinking'],['reasoning_effort','OpenAI · reasoning_effort']].map(([v,l])=>`<option value="${v}" ${s.aiThinkingFormat===v?'selected':''}>${l}</option>`).join('')}</select></label><label class="check-label"><input type="checkbox" data-setting="aiJsonMode" ${s.aiJsonMode ? 'checked' : ''}>强制 JSON 输出</label><p>只在服务商明确支持 JSON mode 时开启。普通问答不受影响。</p></details>
-      <div class="setting-actions"><button class="button primary" data-nav="ai">打开 AI 学习${icon('arrow')}</button></div></div></section>`;
+      <div class="setting-actions"><button class="button primary" data-action="ai-save-config">保存 API 配置</button><button class="button" data-nav="ai">打开 AI 学习${icon('arrow')}</button></div><p id="ai-save-status" class="hint" role="status">接口地址、模型及输出设置会保存在此设备；密钥是否长期保存由上面的勾选决定。</p><details class="format-help" id="ai-local-help" ${s.aiProvider === 'ollama' ? 'open' : ''}><summary>连接本地 Ollama</summary><p>先启动 Ollama 并下载一个模型，再获取模型列表、选择模型并保存配置。localhost 是正在打开此网页的设备；手机或平板连接电脑时，请填电脑的局域网 IP，例如 http://192.168.1.10:11434/v1。</p><p>电脑上的 Ollama 需允许这个网页来源。macOS / Linux 可退出现有服务后，在终端运行：</p><pre class="selectable">OLLAMA_ORIGINS="${esc(location.origin)}" ollama serve</pre><p>供局域网设备访问时，还需设置 OLLAMA_HOST=0.0.0.0:11434。浏览器询问本地网络访问时选择允许。HTTPS 网页调用 HTTP 公网服务可能被浏览器阻止；此时请使用 HTTPS 代理或本地 HTTP 页面。</p></details></div></section>`;
   }
   function materialHTML(material, collapseTranslation = true) {
     const words = [...(material.words || [])].sort((a, b) => b.length - a.length);
@@ -128,7 +147,7 @@ export function installAI(bridge) {
     if (!state().settings.aiEnabled) { bridge.main.innerHTML = `<div class="page"><div class="empty">${icon('sparkle')}<h1>按需开启 AI 学习</h1><p>造句、小故事、词汇问答和文档整理都在这里。默认关闭，由你决定是否使用。</p><button class="button primary" data-nav="settings">去设置开启</button></div></div>`; return; }
     const book = currentBook(); if (book) { bookId = book.id; selected = new Set([...selected].filter(id => book.words.some(w => w.id === id))); }
     if (book && !selected.size) selected = new Set(book.words.slice(0, 5).map(w => w.id));
-    bridge.main.innerHTML = `<div class="page ai-page"><div class="page-intro"><div><div class="eyebrow">WORDS INTO WORLDS</div><h1>让词汇，有个故事。</h1><p>选几个词，造句、串成故事，或把不懂的地方问清楚。</p></div><button class="button primary" data-action="ai-import">${icon('upload')}文档生成词书</button></div>${!readAIKey() ? '<div class="notice">先在学习设置中填写密钥和模型。<button class="text-button" data-nav="settings">打开设置 →</button></div>' : ''}
+    bridge.main.innerHTML = `<div class="page ai-page"><div class="page-intro"><div><div class="eyebrow">WORDS INTO WORLDS</div><h1>让词汇，有个故事。</h1><p>选几个词，造句、串成故事，或把不懂的地方问清楚。</p></div><button class="button primary" data-action="ai-import">${icon('upload')}文档生成词书</button></div>${!aiReady(state().settings) ? '<div class="notice">先在学习设置中配置接口并选择模型；本地服务可留空密钥。<button class="text-button" data-nav="settings">打开设置 →</button></div>' : ''}
       <div class="ai-tabs" role="tablist" aria-label="AI 学习方式">${[['story','小故事'],['chat','词汇问答'],['collection','学习素材']].map(([value,label]) => `<button role="tab" aria-selected="${tab === value}" class="button ${tab === value ? 'soft' : ''}" data-action="ai-tab" data-tab="${value}">${label}</button>`).join('')}</div>
       ${tab === 'collection' ? `<div class="ai-collection">${[...(state().aiMaterials || [])].reverse().map(material => `<div class="panel"><div class="ai-saved-meta"><span>${esc(bookById(state(), material.bookId)?.name || '学习素材')} · ${new Date(material.createdAt).toLocaleDateString('zh-CN')}</span><button class="text-button" data-action="ai-remove-material" data-material="${esc(material.id)}">移除</button></div>${materialHTML(material)}<div class="preview-chips">${material.words.map(w => `<span>${esc(w)}</span>`).join('')}</div></div>`).join('') || '<div class="empty"><h3>把喜欢的内容留下来</h3><p>生成的例句和故事会自动存到这里，也会包含在词书备份中。</p></div>'}</div>` : `<div class="ai-workspace"><aside class="panel ai-picker"><div class="field"><label for="ai-book">从哪本词书挑词</label><select id="ai-book">${state().books.map(b => `<option value="${esc(b.id)}" ${book?.id === b.id ? 'selected' : ''}>${esc(b.name)}</option>`).join('')}</select></div>${book ? `<div class="search-field">${icon('search')}<input class="input" id="ai-word-search" placeholder="搜索词或词组…" aria-label="搜索故事词汇"></div><div class="ai-pick-tools"><span class="hint" id="ai-selected-count"></span><button class="text-button" data-action="ai-random">随机挑 5 个</button></div><div id="ai-selected-chips" class="ai-selected-chips"></div><div id="ai-word-picker" class="ai-word-picker"></div><p class="hint" id="ai-picker-more"></p>` : '<p class="hint">先导入词书，也可以直接向 AI 提问或上传文档。</p>'}</aside>
       <section class="panel ai-work-panel">${tab === 'story' ? `<div class="panel-head">${icon('sparkle')}<h2>把这些词，揉成小故事</h2></div><p class="hint">会使用全部已选词，附中文翻译。生成后自动保存。</p><div class="field" style="margin-top:18px"><label for="ai-story-idea">想读什么样的故事</label><input class="input" id="ai-story-idea" maxlength="1000" placeholder="例如：海边的一次奇遇 / 科幻 / 校园日常"></div><div class="setting-actions"><button class="button primary" data-action="ai-page-story" ${pageAbort ? 'disabled' : ''}>${icon('sparkle')}生成小故事</button><button class="button" data-action="ai-page-example" ${pageAbort ? 'disabled' : ''}>为第一个词造句</button><button class="text-button" data-action="ai-page-cancel" ${pageAbort ? '' : 'hidden'}>取消</button></div><div id="ai-page-output" class="ai-page-output" role="status"></div>` : `<div class="panel-head">${icon('sparkle')}<h2>词汇问答</h2></div><p class="hint">AI 会参考左侧已选词。问用法、辨析、改例句，或让它出一道练习题。</p><div class="ai-question-shortcuts">${['讲讲这些词怎么用','辨析容易混淆的表达','用选中的词考我一道题'].map(q => `<button class="button compact" data-action="ai-question" data-question="${esc(q)}">${q}</button>`).join('')}</div><div id="ai-chat-messages" class="ai-chat-messages" role="log" aria-live="polite"></div><form id="ai-chat-form"><textarea class="textarea" id="ai-chat-input" aria-label="向 AI 提问" placeholder="写下你的问题… Enter 发送，Shift+Enter 换行" maxlength="6000"></textarea><div class="setting-actions"><button class="button primary" type="submit" ${pageAbort ? 'disabled' : ''}>发送${icon('arrow')}</button><button class="button" type="button" data-action="ai-chat-clear">新对话</button><button class="text-button" type="button" data-action="ai-page-cancel" ${pageAbort ? '' : 'hidden'}>取消</button></div></form>`}</section></div>`}</div>`;
@@ -186,7 +205,7 @@ export function installAI(bridge) {
     const drop = $('#ai-document-drop'); ['dragenter','dragover'].forEach(name => drop.addEventListener(name, e => { e.preventDefault(); drop.classList.add('drag'); })); ['dragleave','drop'].forEach(name => drop.addEventListener(name, e => { e.preventDefault(); drop.classList.remove('drag'); })); drop.addEventListener('drop', e => read(e.dataTransfer.files[0]));
     create.addEventListener('click', async () => {
       if (reading || documentAbort) return; source = textarea.value.trim(); if (!source) { report('先选择文档或粘贴文字'); return; }
-      if (!configured()) { report('AI 已关闭或密钥未填写，请检查设置'); return; }
+      if (!configured()) { report('AI 尚未配置完成，请检查接口和模型设置'); return; }
       const controller = new AbortController(); documentAbort = controller; create.disabled = true; textarea.readOnly = true;
       try {
         const result = await extractVocabulary({ ...state().settings }, source, filename, $('#ai-document-instructions').value, controller.signal, report);
@@ -201,10 +220,11 @@ export function installAI(bridge) {
     const button = event.target.closest('[data-action^="ai-"]'); if (!button || button.disabled) return;
     const action = button.dataset.action;
     if (action === 'ai-provider') {
-      const presets = { openai: ['https://api.openai.com/v1','gpt-4.1-mini'], deepseek: ['https://api.deepseek.com','deepseek-flash'] }; const preset = presets[button.dataset.provider]; if (!preset) return;
-      state().settings.aiBase = preset[0]; state().settings.aiModel = ''; models = []; bridge.persist(); $('#ai-base').value = preset[0]; $('#ai-model').innerHTML = '<option value="">请选择模型</option>'; refreshModels();
-    } else if (action === 'ai-model-refresh') await refreshModels();
-    else if (action === 'ai-clear-key') { modelsAbort?.abort(); models = []; saveAIKey(''); $('#ai-key').value = ''; $('#ai-model-status').textContent = '填写密钥后获取模型列表'; bridge.toast('密钥已清除'); }
+      const presets = { openai: ['https://api.openai.com/v1','gpt-4.1-mini'], deepseek: ['https://api.deepseek.com','deepseek-flash'], ollama: ['http://localhost:11434/v1',''] }; const preset = presets[button.dataset.provider]; if (!preset) return;
+      state().settings.aiBase = preset[0]; state().settings.aiModel = ''; state().settings.aiProvider = button.dataset.provider === 'ollama' ? 'ollama' : 'custom'; state().settings.aiNoKey = button.dataset.provider === 'ollama'; state().settings.aiThinkingFormat = 'auto'; $('#ai-no-key').checked = state().settings.aiNoKey; $('[data-setting="aiThinkingFormat"]').value = 'auto'; $('#ai-local-help').open = state().settings.aiProvider === 'ollama'; models = []; bridge.persist(); $('#ai-base').value = preset[0]; $('#ai-model').innerHTML = '<option value="">请选择模型</option>'; refreshModels();
+    } else if (action === 'ai-save-config') await saveConfiguration();
+    else if (action === 'ai-model-refresh') await refreshModels();
+    else if (action === 'ai-clear-key') { modelsAbort?.abort(); models = []; saveAIKey(''); $('#ai-key').value = ''; $('#ai-model-status').textContent = canAuthenticateAI(state().settings) ? '密钥已清除，可直接获取本地模型列表' : '填写密钥后获取模型列表'; bridge.toast('密钥已清除'); }
     else if (action === 'ai-inline-example') await inlineGenerate('example');
     else if (action === 'ai-inline-story') await inlineGenerate('story');
     else if (action === 'ai-inline-cancel') { const context = contextWord(); if (context?.word) inlineJobs.get(`${context.bookId}/${context.word.id}`)?.abort(); }
@@ -228,11 +248,11 @@ export function installAI(bridge) {
   document.addEventListener('change', event => {
     const element = event.target;
     if (element.id === 'ai-remember-key') saveAIKey($('#ai-key').value, element.checked);
-    if (element.id === 'ai-key') refreshModels();
+    if (element.id === 'ai-key' || element.id === 'ai-no-key') refreshModels();
     if (element.id === 'ai-book') { pageAbort?.abort(); bookId = element.value; selected.clear(); renderPage(); }
     if (element.dataset.aiWord) { if (element.checked) { if (selected.size >= 10) { element.checked = false; bridge.toast('一次最多选 10 个词'); return; } selected.add(element.dataset.aiWord); } else selected.delete(element.dataset.aiWord); renderWordPicker(); }
     if (element.dataset.setting === 'aiBase') { try { completionURL(element.value); models = []; refreshModels(); } catch (error) { element.value = state().settings.aiBase; bridge.toast(error.message, true); } }
-    if (element.dataset.setting === 'aiEnabled') { if (!element.checked) cancelAll(); else if (readAIKey()) refreshModels(); navigation(); $('#ai-settings-fields').hidden = !element.checked; }
+    if (element.dataset.setting === 'aiEnabled') { if (!element.checked) cancelAll(); else if (canAuthenticateAI(state().settings)) refreshModels(); navigation(); $('#ai-settings-fields').hidden = !element.checked; }
   });
   document.addEventListener('submit', event => { if (event.target.id === 'ai-chat-form') { event.preventDefault(); ask(); } });
   document.addEventListener('keydown', event => { if (event.target.id === 'ai-chat-input' && event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); ask(); } });

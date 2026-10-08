@@ -8,6 +8,7 @@ import { loadDurableState, saveDurableState, savingError, parseBackup, backupTex
 import { Pronunciation } from './audio.js';
 import { icon } from './icons.js';
 import { installAI } from './ai-ui.js';
+import { completionURL } from './ai.js';
 import { installMaple } from './lap-ui.js';
 import { applyAppearance, appearanceHTML, PALETTES } from './appearance.js';
 
@@ -506,6 +507,10 @@ document.addEventListener('change', async event => {
   if (element.dataset.setting) {
     const key = element.dataset.setting;
     const value = element.type === 'checkbox' ? element.checked : element.type === 'number' || element.type === 'range' ? Number(element.value) : element.value;
+    if (key === 'aiBase') {
+      try { completionURL(value); }
+      catch (error) { element.value = state.settings.aiBase; toast(error.message, true); event.stopImmediatePropagation(); return; }
+    }
     if (key === 'audioTemplate' && value && (!value.startsWith('https://') || !value.includes('{text}'))) { toast('请填写包含 {text} 的 HTTPS 音频链接', true); element.value = state.settings.audioTemplate; return; }
     if (key === 'uiCustom' && value) {
       const style = getComputedStyle(document.documentElement);

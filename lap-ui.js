@@ -1,5 +1,5 @@
 import { uid, recordStudy } from './core.js';
-import { readAIKey } from './ai.js';
+import { aiReady } from './ai.js';
 import { POS, SKILLS, DEFAULT_EXAM, availablePOS, examPOS, normalizeEntries, parseLAPJSON, createPaper, checkForms, spelling, updateProgress, startPractice } from './lap-core.js';
 import { readLAPFiles, extractLAP, generateCorrections, gradePaper, gradeMeaning } from './lap-ai.js';
 import { icon } from './icons.js';
@@ -26,8 +26,8 @@ export function installMaple(bridge) {
   const paper = () => collection()?.papers.find(p => p.id === collection().activePaperId);
   const isPage = () => location.hash === '#maple';
   function requireAI() {
-    if (state().settings.aiEnabled && readAIKey() && state().settings.aiModel) return true;
-    bridge.toast('枫叶 LAP 需要开启 AI、填写密钥并选择模型'); bridge.navigate('settings'); return false;
+    if (aiReady(state().settings)) return true;
+    bridge.toast('请开启 AI、配置接口并选择模型；本地服务可留空密钥'); bridge.navigate('settings'); return false;
   }
   function stopPlayback() { playToken++; clearTimeout(playTimer); bridge.audio.stop(); }
   function playWords(words) {
@@ -91,7 +91,7 @@ export function installMaple(bridge) {
   function renderPage() {
     const c = collection(); if (c) selectedId = c.id;
     document.body.classList.toggle('lap-practicing', view === 'practice' && !!c?.practice?.queue.length);
-    bridge.main.innerHTML = `<div class="page maple-page"><div class="page-intro"><div><div class="eyebrow">MAPLE LEARNING</div><h1><span aria-hidden="true">🍁</span> 枫叶模式</h1><p>从一张词表，到会拼写、会转换、会表达。</p></div><button class="button primary" data-action="lap-import" ${job ? 'disabled' : ''}>${icon('upload')}导入 LAP 词表</button></div><div class="lap-mode-bar"><span class="badge">LAP 单词模式</span><span class="hint">更多模式（如 Vocab）将来加入</span></div>${!state().settings.aiEnabled || !readAIKey() || !state().settings.aiModel ? '<div class="notice">JSON 导入和词形练习无需 AI；资料识别、改错题生成与造句/改错批改需要配置 AI。图片需要选择支持视觉的模型。<button class="text-button" data-nav="settings">打开设置 →</button></div>' : ''}
+    bridge.main.innerHTML = `<div class="page maple-page"><div class="page-intro"><div><div class="eyebrow">MAPLE LEARNING</div><h1><span aria-hidden="true">🍁</span> 枫叶模式</h1><p>从一张词表，到会拼写、会转换、会表达。</p></div><button class="button primary" data-action="lap-import" ${job ? 'disabled' : ''}>${icon('upload')}导入 LAP 词表</button></div><div class="lap-mode-bar"><span class="badge">LAP 单词模式</span><span class="hint">更多模式（如 Vocab）将来加入</span></div>${!aiReady(state().settings) ? '<div class="notice">JSON 导入和词形练习无需 AI；资料识别、改错题生成与造句/改错批改需要配置 AI。图片需要选择支持视觉的模型。<button class="text-button" data-nav="settings">打开设置 →</button></div>' : ''}
       ${c ? `<div class="field"><label for="lap-collection">我的 LAP</label><select id="lap-collection" ${job ? 'disabled' : ''}>${collections().map(item => `<option value="${esc(item.id)}" ${item.id === c.id ? 'selected' : ''}>${esc(item.name)} · ${item.entries.length} 个词族</option>`).join('')}</select></div><div class="ai-tabs" role="tablist" aria-label="LAP 学习方式">${[['words','词族表'],['practice','背诵'],['exam','模拟考试']].map(([key,label]) => `<button class="button ${view === key ? 'soft' : ''}" role="tab" aria-selected="${view === key}" data-action="lap-tab" data-view="${key}" ${job ? 'disabled' : ''}>${label}</button>`).join('')}</div>` : ''}<div class="lap-job" id="lap-job" role="status" ${job ? '' : 'hidden'}><span id="lap-job-text">正在处理…</span><button class="text-button" data-action="lap-cancel">取消</button></div><div class="lap-workspace">${c ? view === 'practice' ? renderPractice(c) : view === 'exam' ? renderExam(c) : renderWords(c) : '<div class="empty"><h2>带来你的第一份 LAP</h2><p>直接上传或粘贴 JSON 词表，无需 AI；也可用 AI 识别文档或图片。核对后开始学习。</p><button class="button primary" data-action="lap-import">上传资料</button></div>'}</div></div>`;
     if (view === 'practice' && c?.practice?.queue.length) queueMicrotask(() => { if (isPage()) (c.practice.feedback ? $('[data-action="lap-practice-next"]') : $('[data-lap-practice]'))?.focus({preventScroll:true}); });
     if (view === 'practice' && c?.practice?.queue[0]?.skill === 'spelling' && !c.practice.feedback && state().settings.autoSpeak && !job) queueMicrotask(() => { if (isPage()) { const e = c.entries.find(e => e.id === c.practice.queue[0]?.entryId); if (e) playWords([e.word]); } });

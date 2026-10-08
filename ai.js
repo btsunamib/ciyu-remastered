@@ -8,16 +8,34 @@ export function readAIKey() {
 export function remembersAIKey() { try { return !!localStorage.getItem(KEY); } catch { return false; } }
 export function saveAIKey(value, remember = false) {
   memoryKey = String(value || '').trim();
-  try { localStorage.removeItem(KEY); sessionStorage.removeItem(KEY); if (memoryKey) (remember ? localStorage : sessionStorage).setItem(KEY, memoryKey); }
-  catch { /* The current tab can still use the in-memory key. */ }
+  try { localStorage.removeItem(KEY); sessionStorage.removeItem(KEY); if (memoryKey) (remember ? localStorage : sessionStorage).setItem(KEY, memoryKey); return true; }
+  catch { return false; /* The current tab can still use the in-memory key. */ }
 }
 export function completionURL(base) {
   let url;
-  try { url = new URL(String(base || '').trim()); } catch { throw new Error('请填写完整的 HTTPS 接口地址'); }
-  if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash) throw new Error('接口地址需要是 HTTPS，不能包含密钥、查询参数或账号密码');
-  const path = url.pathname.replace(/\/+$/, '');
+  try { url = new URL(String(base || '').trim()); } catch { throw new Error('请填写完整的 HTTP 或 HTTPS 接口地址'); }
+  if (!['https:','http:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) throw new Error('接口地址需要是 HTTP 或 HTTPS，不能包含密钥、查询参数或账号密码');
+  let path = url.pathname.replace(/\/+$/, '');
+  if (!path && url.port === '11434') path = '/v1';
   url.pathname = path.endsWith('/chat/completions') ? path : `${path}/chat/completions`;
   return url.href;
+}
+export function apiAddressSpace(base) {
+  let host; try { host = new URL(base).hostname.toLowerCase(); } catch { return undefined; }
+  if (host === 'localhost' || host.endsWith('.localhost') || /^127\./.test(host) || host === '[::1]') return 'loopback';
+  const parts = host.split('.').map(Number);
+  if (parts.length === 4 && parts.every(n => Number.isInteger(n) && n >= 0 && n <= 255) && (parts[0] === 10 || parts[0] === 192 && parts[1] === 168 || parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31 || parts[0] === 169 && parts[1] === 254)) return 'local';
+  if (host.endsWith('.local') || /^\[(?:f[cd][\da-f]{2}:|fe[89ab][\da-f]:)/i.test(host)) return 'local';
+  return undefined;
+}
+export const canAuthenticateAI = settings => !!(settings.aiNoKey || apiAddressSpace(settings.aiBase) || readAIKey());
+export const aiReady = settings => !!(settings.aiEnabled && canAuthenticateAI(settings) && settings.aiModel?.trim());
+const authHeaders = settings => settings.aiNoKey || !readAIKey() ? {} : { Authorization: `Bearer ${readAIKey()}` };
+const networkOptions = settings => apiAddressSpace(settings.aiBase) ? { targetAddressSpace: apiAddressSpace(settings.aiBase) } : {};
+function connectionError(settings, models = false) {
+  if (apiAddressSpace(settings.aiBase) || settings.aiProvider === 'ollama') return '无法连接本地 AI：请确认 Ollama 已启动，地址使用 /v1，允许此网站的跨域来源（OLLAMA_ORIGINS）及浏览器本地网络访问。手机/平板请填电脑的局域网 IP，localhost 指当前设备。';
+  if (settings.aiBase?.startsWith('http:') && globalThis.location?.protocol === 'https:') return 'HTTPS 网页可能阻止这个 HTTP 接口。请使用 HTTPS 代理或从本地 HTTP 页面访问，并检查服务的 CORS 设置。';
+  return models ? '无法获取模型：请检查网络以及服务的 CORS 设置' : '无法连接接口：请检查网络与服务跨域设置（CORS）';
 }
 export function modelsURL(base) {
   const url = new URL(completionURL(base));
@@ -25,8 +43,7 @@ export function modelsURL(base) {
   return url.href;
 }
 export async function fetchModels(settings, signal) {
-  const key = readAIKey();
-  if (!settings.aiEnabled || !key) throw new Error('先开启 AI 并填写 API 密钥，再获取模型列表');
+  if (!settings.aiEnabled || !canAuthenticateAI(settings)) throw new Error('先开启 AI 并填写 API 密钥；本地服务可以留空密钥');
   const controller = new AbortController();
   const cancel = () => controller.abort();
   signal?.addEventListener('abort', cancel, { once: true });
@@ -34,17 +51,17 @@ export async function fetchModels(settings, signal) {
   let timedOut = false;
   const timer = setTimeout(() => { timedOut = true; controller.abort(); }, 20000);
   try {
-    const response = await fetch(modelsURL(settings.aiBase), { headers: { Authorization: `Bearer ${key}` }, signal: controller.signal, credentials: 'omit', redirect: 'error', cache: 'no-store' });
+    const response = await fetch(modelsURL(settings.aiBase), { headers: authHeaders(settings), ...networkOptions(settings), signal: controller.signal, credentials: 'omit', redirect: 'error', cache: 'no-store' });
     if (!response.ok) throw new Error(response.status === 401 ? '密钥无效，请检查后重新获取模型' : `无法获取模型列表（${response.status}），请确认服务支持 GET /models`);
     const data = await response.json();
     const list = Array.isArray(data.data) ? data.data : Array.isArray(data.models) ? data.models : [];
-    const ids = [...new Set(list.map(m => typeof m === 'string' ? m : m?.id).filter(id => typeof id === 'string' && id.trim() && id.length <= 160).map(id => id.trim()))].sort();
+    const ids = [...new Set(list.map(m => typeof m === 'string' ? m : m?.id || m?.name || m?.model).filter(id => typeof id === 'string' && id.trim() && id.length <= 160).map(id => id.trim()))].sort();
     if (!ids.length) throw new Error('服务没有返回可选模型，请检查 API 地址和密钥权限');
     return ids;
   } catch (error) {
     if (timedOut) throw new Error('获取模型列表超时，请重试');
     if (controller.signal.aborted) throw new DOMException('已取消', 'AbortError');
-    if (error instanceof TypeError) throw new Error('无法获取模型：请检查网络以及服务的 CORS 设置');
+    if (error instanceof TypeError) throw new Error(connectionError(settings, true));
     throw error;
   } finally { clearTimeout(timer); signal?.removeEventListener('abort', cancel); }
 }
@@ -53,6 +70,8 @@ export function thinkingParameters(settings) {
   const on = settings.aiThinking === 'on', model = settings.aiModel || '';
   let format = settings.aiThinkingFormat || 'auto';
   if (format === 'auto') {
+    let ollama = settings.aiProvider === 'ollama'; try { ollama ||= new URL(settings.aiBase).port === '11434'; } catch {}
+    if (ollama) return { reasoning_effort: on ? 'high' : 'none' };
     if (/dashscope|aliyun/i.test(settings.aiBase) || /qwen/i.test(model)) format = 'enable_thinking';
     else if (/deepseek/i.test(settings.aiBase) || /deepseek/i.test(model)) format = 'thinking';
     else if (/^(gpt-5|gpt-6|o[134])/.test(model)) format = 'reasoning_effort';
@@ -64,7 +83,7 @@ export function thinkingParameters(settings) {
 }
 export async function requestAI(settings, messages, { signal, json = false, onToken } = {}) {
   if (!settings.aiEnabled) throw new Error('先在设置中打开 AI 学习助手');
-  const key = readAIKey(); if (!key) throw new Error('先在设置中填写 API 密钥');
+  if (!canAuthenticateAI(settings)) throw new Error('先在设置中填写 API 密钥；本地服务可以留空密钥');
   if (!settings.aiModel?.trim()) throw new Error('先在设置中获取模型列表并选择模型');
   const controller = new AbortController(); let timedOut = false, receivedToken = false;
   const cancel = () => controller.abort(); signal?.addEventListener('abort', cancel, { once: true });
@@ -74,18 +93,23 @@ export async function requestAI(settings, messages, { signal, json = false, onTo
     const body = { model: settings.aiModel.trim(), messages, stream: settings.aiStream === true, ...thinkingParameters(settings) };
     if (json && settings.aiJsonMode) body.response_format = { type: 'json_object' };
     const response = await fetch(completionURL(settings.aiBase), {
-      method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
+      method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders(settings) }, ...networkOptions(settings),
       body: JSON.stringify(body), signal: controller.signal, credentials: 'omit', redirect: 'error'
     });
     if (!response.ok) {
       const reasons = { 400: '服务不支持本次请求格式，请检查模型能力或将思考设置改为跟随模型；图片需视觉模型', 401: '密钥无效或已过期，请检查设置', 403: '接口拒绝请求，请检查密钥权限和服务地址', 404: '找不到接口或模型', 413: '内容太长，请减少文档内容', 429: '请求过多或余额不足，请稍后再试' };
       throw new Error(reasons[response.status] || `AI 服务暂时没有完成请求（${response.status}）`);
     }
-    let output = '';
+    let output = '', reasoningText = '';
+    const reportProgress = () => {
+      const progress = { content: output, reasoning: reasoningText, reasoningCount: reasoningText.length, signal, json };
+      onToken?.(progress);
+      if (typeof document !== 'undefined') document.dispatchEvent(new CustomEvent('ciyu-ai-stream', { detail: progress }));
+    };
     if (body.stream && response.headers.get('content-type')?.includes('text/event-stream')) {
       if (!response.body) throw new Error('接口没有返回可读取的流');
       const reader = response.body.getReader(), decoder = new TextDecoder();
-      let buffer = '', ended = false, finished = false, reasoningCount = 0;
+      let buffer = '', ended = false, finished = false;
       const event = block => {
         const data = block.split(/\r?\n/).filter(line => line.startsWith('data:')).map(line => line.slice(5).trimStart()).join('\n');
         if (!data) return;
@@ -100,10 +124,8 @@ export async function requestAI(settings, messages, { signal, json = false, onTo
         const content = typeof delta.content === 'string' ? delta.content : Array.isArray(delta.content) ? delta.content.map(p => p.text || '').join('') : '';
         const reasoning = typeof delta.reasoning_content === 'string' ? delta.reasoning_content : typeof delta.reasoning === 'string' ? delta.reasoning : '';
         if (content || reasoning) {
-          receivedToken = true; clearTimeout(timer); output += content; reasoningCount += reasoning.length;
-          const progress = { content: output, reasoningCount, signal, json };
-          onToken?.(progress);
-          if (typeof document !== 'undefined') document.dispatchEvent(new CustomEvent('ciyu-ai-stream', { detail: progress }));
+          receivedToken = true; clearTimeout(timer); output += content; reasoningText += reasoning;
+          reportProgress();
         }
       };
       try {
@@ -122,13 +144,16 @@ export async function requestAI(settings, messages, { signal, json = false, onTo
       if (choice?.finish_reason === 'length') throw new Error('模型回复被截断，请减少内容再试');
       const content = choice?.message?.content;
       output = typeof content === 'string' ? content : Array.isArray(content) ? content.map(p => p.text || '').join('\n') : '';
+      reasoningText = choice?.message?.reasoning_content || choice?.message?.reasoning || '';
+      if (typeof reasoningText !== 'string') reasoningText = '';
+      if (output || reasoningText) reportProgress();
     }
     if (!output.trim()) throw new Error('AI 没有返回正文，请检查模型是否支持对话输出');
     return output.trim();
   } catch (error) {
     if (timedOut) throw new Error('AI 在 90 秒内未开始输出，请重试或换模型');
     if (controller.signal.aborted) throw new DOMException('已取消', 'AbortError');
-    if (error instanceof TypeError) throw new Error('无法连接接口：请检查网络与服务跨域设置（CORS）');
+    if (error instanceof TypeError) throw new Error(connectionError(settings));
     throw error;
   } finally { clearTimeout(timer); signal?.removeEventListener('abort', cancel); }
 }

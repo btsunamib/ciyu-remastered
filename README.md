@@ -19,7 +19,31 @@ GitHub Pages：在仓库 Settings → Pages 中选择 Deploy from a branch → m
 
 ## AI 学习与个性化（2026-10-04）
 
-设置中的 **AI 学习助手默认关闭**。开启后填写 API 地址和密钥，从服务的 `/models` 列表直接选择模型，支持 OpenAI Chat Completions 格式的服务。可选 OpenAI / DeepSeek 预设，也可填写自己的兼容服务；网页直连服务，需要服务允许 CORS。填写密钥、切换地址和打开设置时自动获取模型，也可以手动刷新。完整 `/chat/completions` 地址会自动推导出同级 `/models` 地址。列表包含服务返回的模型，请按用途选择对话模型；图片识别需视觉模型。
+设置中的 **AI 学习助手默认关闭**。开启后填写 HTTP / HTTPS API 地址，从服务的 `/models` 列表直接选择模型，支持 OpenAI Chat Completions 格式的服务。可选 OpenAI / DeepSeek / 本地 Ollama 预设，也可填写自己的兼容服务；网页直连服务，需要服务允许 CORS。远程服务填写密钥，本地服务可留空，也可勾选“此接口无需密钥”。填写密钥、切换地址和打开设置时自动获取模型，也可以手动刷新。完整 `/chat/completions` 地址会自动推导出同级 `/models` 地址。列表包含服务返回的模型，请按用途选择对话模型；图片识别需视觉模型。
+
+### HTTP、本地 Ollama 与配置保存（2026-10-08）
+
+- **保存 API 配置**：设置中点击保存，写入接口地址、模型、免密钥选项、流式与思考等设置，刷新后恢复。密钥单独保存；只有勾选“在这台设备记住密钥”才长期保存，未勾选时只保留在当前浏览器会话，密钥始终不进入词书备份。
+- **本地 Ollama**：先启动 Ollama 并下载模型，再在设置选择“本地 Ollama” → 获取模型 → 选择模型 → 保存 API 配置。预设地址为 `http://localhost:11434/v1`，无需密钥；即使此前保存了云端密钥，免密钥请求也不会携带它。只填 `http://localhost:11434` 时自动补上 `/v1`。
+- **本地网络访问**：网页中的 `localhost` 指正在打开网页的设备。手机或平板连接电脑时，填电脑的局域网地址，如 `http://192.168.1.10:11434/v1`，电脑需设置 `OLLAMA_HOST=0.0.0.0:11434`。Ollama 还需允许网页来源，GitHub Pages 来源为 `https://btsunamib.github.io`。浏览器询问本地网络访问时选择允许。HTTPS 页面访问 HTTP 公网接口仍可能受浏览器限制，必要时使用 HTTPS 代理或本地 HTTP 页面。
+- **记忆卡片气泡**：可直接切换流式输出、思考 / 不思考 / 跟随模型；选项与全局设置同步保存。回复支持 Markdown 标题、列表、表格、引用和代码块；模型返回的思考内容放入可展开的独立块，流式更新时保持展开状态。支持 `reasoning_content`、`reasoning` 及正文开头的 `<think>` 标记；接口不返回思考内容时会说明。收到正文或思考 token 后取消首 token 超时，可随时停止。
+
+macOS / Linux 退出现有 Ollama 服务后，可在终端启动：
+
+```sh
+OLLAMA_ORIGINS="https://btsunamib.github.io" ollama serve
+```
+
+Windows PowerShell 退出现有服务后：
+
+```powershell
+$env:OLLAMA_ORIGINS="https://btsunamib.github.io"
+ollama serve
+```
+
+详见 [Ollama OpenAI 兼容接口](https://docs.ollama.com/api/openai-compatibility)与 [Ollama 网络配置说明](https://docs.ollama.com/faq)。不同模型的思考能力、JSON 与图片支持以模型为准。自动适配 Ollama 时使用其 `reasoning_effort` 开关；其他兼容服务仍可手动选择开关格式。
+
+本次验证：50 项 Node.js 测试，以及 Chromium 中的模拟 HTTP 本地服务与 SSE。检查配置刷新恢复、免密钥请求、思考块、Markdown 安全渲染、取消与移动布局；没有连接用户电脑上的真实 Ollama。
 
 - 学习卡片上为当前词造句、用当前词与同书其他词编小故事、围绕本词问答。听写与中译英题先作答，再显示 AI 入口，避免提前泄露答案。
 - AI 学习页从任意词书选择 1–10 个单词或完整词组，支持搜索、随机挑词、故事方向、A2–C1 难度、双语例句、小故事和多轮问答。
@@ -36,7 +60,7 @@ GitHub Pages：在仓库 Settings → Pages 中选择 Deploy from a branch → m
 
 ## 枫叶模式 · LAP
 
-导航中的 **枫叶模式** 提供独立的 **LAP 单词模式（AI）**，并预留 Vocab 等未来模式。JSON 导入、词族查看与词形练习无需 AI；文档/图片识别、改错题生成及造句/改错批改需在设置中开启 AI、填写密钥并选择模型。
+导航中的 **枫叶模式** 提供独立的 **LAP 单词模式（AI）**，并预留 Vocab 等未来模式。JSON 导入、词族查看与词形练习无需 AI；文档/图片识别、改错题生成及造句/改错批改需在设置中开启 AI、配置接口并选择模型，本地服务可留空密钥。
 
 - **JSON 直接导入（无需 AI）**：上传 `.json` 文件或粘贴 JSON 数组，使用 `word`、`pos`、`noun`、`verb`、`pastTense`、`adjective`、`adverb` 字段，可选 `num`、`meaning`、`note`。`N/A`、空白或缺省字段表示没有对应形式，`/` 分隔多个词形，过去式独立成列。括号说明及星号保存在备注；不改原文拼写，不联网补词或补释义。缺少释义仍可保存，并在核对页手动补充；格式或词形错误显示行号，失败不保存部分数据。全部字段、词形和备注随完整备份保留。
 - 上传一份 TXT / Markdown / CSV / TSV / 含文字 PDF / Word `.docx`，或最多 8 张 PNG / JPEG / WebP 图片，也可以粘贴带列标题的词表。单文件最多 15 MB，合计 30 MB。扫描资料请上传为图片。长文档逐段整理，多张图片逐张识别，最后合并同一主词的词族；识别失败或取消不保存半份结果。
