@@ -90,6 +90,7 @@ test('审查包含已掌握词，每个词仅一次，拼错标记后立即可�
 test('复习只收集到期词，正确延长间隔，忘记回退并在本轮再考', () => {
   const { state, book } = fixture('apple | 苹果\nbanana | 香蕉');
   book.words[0].review = { stage: 1, dueAt: 1, lapses: 0 }; book.words[1].review = { stage: 1, dueAt: 200000, lapses: 0 };
+  book.dailyReview = true;
   const s = startSession(state, 'all', 'review', { now: 1000 }); assert.equal(s.initialTotal, 1);
   next(state, s, false, 1000); assert.equal(s.active.length, 1); assert.equal(book.words[0].review.dueAt, 1000 + INTERVALS[0]);
   next(state, s, true, 2000); assert.equal(book.words[0].review.stage, 2); assert.ok(book.words[0].review.dueAt > 2000);

@@ -80,12 +80,13 @@ export function normalizeState(input) {
         });
       }
     }
-    return { id, name: book.name.trim().slice(0, 60) || '未命名词书', createdAt: Number(book.createdAt) || Date.now(), words };
+    return { id, name: book.name.trim().slice(0, 60) || '未命名词书', createdAt: Number(book.createdAt) || Date.now(), dailyReview: book.dailyReview === true, words };
   });
   if (input.version === 2 && input.sessions && typeof input.sessions === 'object') {
     for (const session of Object.values(input.sessions)) {
       if (!session || !MODE_INFO[session.mode] || !Array.isArray(session.active) || !Array.isArray(session.queue)) continue;
       if (session.bookId !== 'all' && !bookById(state, session.bookId)) continue;
+      if (session.bookId === 'all' && session.mode === 'review' && [...session.active, ...session.queue].some(item => bookById(state, item.bookId)?.dailyReview !== true)) continue;
       const clean = clone(session);
       clean.active = clean.active.filter(item => validItem(state, item, session.bookId));
       clean.queue = clean.queue.filter(item => validItem(state, item, session.bookId));
@@ -135,7 +136,7 @@ export function decodeText(buffer) {
 }
 export function importEntries(state, entries, name, targetId) {
   let book = bookById(state, targetId);
-  if (!book) { book = { id: uid(), name: String(name || '我的词书').trim().slice(0, 60), createdAt: Date.now(), words: [] }; state.books.push(book); }
+  if (!book) { book = { id: uid(), name: String(name || '我的词书').trim().slice(0, 60), createdAt: Date.now(), dailyReview: false, words: [] }; state.books.push(book); }
   let added = 0, updated = 0;
   for (const entry of entries) {
     const existingGroup = entry.ens.map(en => book.words.find(w => normWord(w.en) === normWord(en))?.synGroup).find(Boolean);
@@ -168,8 +169,16 @@ function makeItem(word, bookId) {
     streak: 0, dictRight: 0, zh2enRight: 0, en2zhRight: 0, right: 0, wrongs: 0, nextEligible: 0, lastAsked: 0,
     pendingWrong: false, visitOld: false, returnOnKnow: true, stage: word.review?.stage || 1, lapses: word.review?.lapses || 0 };
 }
+export const dailyReviewBooks = state => state.books.filter(book => book.dailyReview === true);
+export const dailyReviewCount = (state, now = Date.now()) => dailyReviewBooks(state).reduce((sum, book) => sum + bookStats(book, now).due, 0);
+export function setDailyReview(state, bookId, enabled) {
+  const book = bookById(state, bookId); if (!book || book.dailyReview === (enabled === true)) return;
+  book.dailyReview = enabled === true;
+  // Word-level review progress remains; rebuild the daily queue for its new book scope.
+  delete state.sessions[sessionKey('all', 'review')];
+}
 export function buildItems(state, bookId, mode, reset = false, now = Date.now()) {
-  const books = bookId === 'all' ? state.books : [bookById(state, bookId)].filter(Boolean);
+  const books = bookId === 'all' ? mode === 'review' ? dailyReviewBooks(state) : state.books : [bookById(state, bookId)].filter(Boolean);
   if (mode === 'review') return books.flatMap(book => book.words.filter(w => w.review?.dueAt <= now).map(w => ({ ...makeItem(w, book.id), dueAt: w.review.dueAt }))).sort((a, b) => a.dueAt - b.dueAt);
   const book = books[0]; if (!book) return [];
   const flag = MODE_INFO[mode].flag;
@@ -184,6 +193,7 @@ export function buildItems(state, bookId, mode, reset = false, now = Date.now())
 export function startSession(state, bookId, mode, options = {}) {
   if (!MODE_INFO[mode]) throw new Error('未知的学习模式');
   const key = sessionKey(bookId, mode);
+  if (bookId === 'all' && mode === 'review' && state.sessions[key] && [...state.sessions[key].active, ...state.sessions[key].queue].some(item => bookById(state, item.bookId)?.dailyReview !== true)) delete state.sessions[key];
   if (state.sessions[key] && !options.restart) return state.sessions[key];
   const items = buildItems(state, bookId, mode, options.reset, options.now);
   if (!items.length) return null;
@@ -385,6 +395,7 @@ export function migrateLegacy(input) {
     };
     const convert = item => {
       const entryBookId = item.bookId || bookId;
+      if (bookId === 'all' && mode === 'review' && bookById(state, entryBookId)?.dailyReview !== true) return null;
       const word = wordById(state, entryBookId, item.wid); if (!word) return null;
       const wordIds = (item.wordIds || [item.wid]).filter(id => wordById(state, entryBookId, id));
       return { ...makeItem(word, entryBookId), ...clone(item), id: uid(), bookId: entryBookId, wordIds,

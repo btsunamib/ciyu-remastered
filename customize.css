@@ -119,3 +119,5 @@ html[data-theme="dark"] .continue-card,html[data-theme="dark"] .empty,html[data-
   .ai-english{font-size:calc(14px * var(--font-scale))}.appearance-preview{padding:14px 10px;gap:9px}.appearance-preview>span{padding:5px 7px}.ai-chat-bubble.user{margin-left:12px}
 }
 @media(max-width:390px){.ai-word-picker{grid-template-columns:1fr}.setting-row select{max-width:145px}.appearance-preview>span{display:none}}
+
+.book-daily-review{display:flex;align-items:center;gap:7px;width:fit-content;max-width:100%;min-height:32px;margin-top:5px;font-size:calc(11px * var(--font-scale));color:var(--muted);cursor:pointer;line-height:1.5}.book-daily-review input{width:17px;height:17px;margin:0;flex-shrink:0;accent-color:var(--primary)}.book-daily-review:has(input:checked){color:var(--primary)}

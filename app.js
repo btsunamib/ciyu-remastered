@@ -2,7 +2,8 @@ import {
   MODE_INFO, DEFAULT_SETTINGS, STORAGE_KEY, LEGACY_KEY, SAMPLE_TEXT, uid, normWord, sanitizeSettings,
   bookById, wordById, bookStats, parseImport, decodeText, importEntries, shuffle, sessionKey,
   startSession, currentItem, chooseNext, revealSpeaking, gradeAnswer, correctToWrong, retryAnswer,
-  advanceSession, isMastered, studyStats, setMastery, resetBook, removeWord, invalidateSessions
+  advanceSession, isMastered, studyStats, setMastery, resetBook, removeWord, invalidateSessions,
+  dailyReviewBooks, dailyReviewCount, setDailyReview
 } from './core.js';
 import { loadDurableState, saveDurableState, savingError, parseBackup, backupText, downloadFile } from './storage.js';
 import { Pronunciation } from './audio.js';
@@ -53,7 +54,7 @@ function dueText(time) {
 function navigation() {
   const active = route.startsWith('book/') ? 'library' : route;
   document.querySelectorAll('[data-nav]').forEach(button => button.classList.toggle('active', button.dataset.nav === active));
-  const totalDue = state.books.reduce((sum, book) => sum + bookStats(book).due, 0);
+  const totalDue = dailyReviewCount(state);
   $('#nav-due').textContent = totalDue; $('#nav-due').hidden = !totalDue;
   const names = { library: '我的词书', review: '记忆复习', settings: '学习设置', ai: 'AI 学习', maple: '枫叶模式' };
   $('#breadcrumb').innerHTML = `我的学习空间 <span>/</span> ${esc(names[active] || '词表')}`;
@@ -83,7 +84,7 @@ function render(options = {}) {
 function libraryCard(book) {
   const stats = bookStats(book); const sessions = Object.values(state.sessions).filter(session => session.bookId === book.id);
   return `<article class="book-card" data-book-card="${esc(book.id)}">
-    <div class="book-top"><div class="book-title"><div class="book-cover">${icon('book')}</div><div><h3>${esc(book.name)}</h3><p>${stats.total} 个词条${stats.due ? ` · ${stats.due} 个待复习` : ''}</p></div></div><button class="icon-button" data-action="book-menu" data-book="${esc(book.id)}" aria-label="${esc(book.name)}的管理选项">${icon('more')}</button></div>
+    <div class="book-top"><div class="book-title"><div class="book-cover">${icon('book')}</div><div><h3>${esc(book.name)}</h3><p>${stats.total} 个词条${book.dailyReview === true && stats.due ? ` · ${stats.due} 个待复习` : ''}</p><label class="book-daily-review"><input type="checkbox" data-book-daily-review="${esc(book.id)}" aria-label="${esc(book.name)}：加入每日复习" ${book.dailyReview === true ? 'checked' : ''}><span>加入每日复习</span></label></div></div><button class="icon-button" data-action="book-menu" data-book="${esc(book.id)}" aria-label="${esc(book.name)}的管理选项">${icon('more')}</button></div>
     ${sessions.length ? `<div class="resume-tag">${icon('clock')}${sessions.map(session => MODE_INFO[session.mode].name).join('、')}进行中</div>` : ''}
     <div class="book-progress">${MODES.map(mode => `<div class="progress-row"><span>${MODE_INFO[mode].name}</span><div class="progress-track"><i style="width:${pct(stats[mode], stats.total)}%"></i></div><span>${pct(stats[mode], stats.total)}%</span></div>`).join('')}</div>
     <div class="book-actions"><button class="button primary" data-action="choose-mode" data-book="${esc(book.id)}">${sessions.length ? '继续 / 选择练习' : '开始学习'}${icon('arrow')}</button><button class="button" data-action="words" data-book="${esc(book.id)}">查看词表</button></div>
@@ -94,7 +95,7 @@ function renderBookGrid() {
   $('#books').innerHTML = books.length ? books.map(libraryCard).join('') : `<div class="empty" style="grid-column:1/-1"><p style="margin:0">没有找到这本词书，换个名字试试。</p></div>`;
 }
 function renderLibrary() {
-  const due = state.books.reduce((sum, book) => sum + bookStats(book).due, 0);
+  const due = dailyReviewCount(state);
   const count = state.books.reduce((sum, book) => sum + book.words.length, 0);
   const sessions = Object.values(state.sessions).sort((a, b) => b.startedAt - a.startedAt);
   const recent = sessions[0];
@@ -255,15 +256,15 @@ function editWord(bookId, wordId) {
   });
 }
 function renderReview() {
-  const total = state.books.reduce((sum, book) => sum + bookStats(book).due, 0);
+  const books = dailyReviewBooks(state), total = dailyReviewCount(state);
   const allSession = state.sessions[sessionKey('all', 'review')];
   main.innerHTML = `<div class="page"><div class="page-intro"><div><h1>在遗忘前，再见一面。</h1><p>复习到期的词，让短暂的熟悉变成长期的记忆。</p></div></div>
-    <section class="panel review-top"><div class="panel-head">${icon('calendar')}<h2>${allSession ? '接着上次的复习' : total ? `今天有 ${total} 个词等你复习` : '现在，还没有到期词'}</h2></div><p>练习掌握后，单词会进入复习安排。记住的词逐步拉长间隔，忘记的词更快回来。</p><div class="curve">${['20 分钟', '1 小时', '9 小时', '1 天', '2 天', '4 天', '7 天', '15 天', '30 天'].map((value, i) => `${i ? '<i>→</i>' : ''}<span>${value}</span>`).join('')}</div><button class="button primary" data-action="review-all" ${!total && !allSession ? 'disabled' : ''}>${allSession ? '继续上次复习' : '复习全部到期词'}${icon('arrow')}</button></section>
-    <div class="section-head"><h2>按词书复习</h2></div><div class="review-list">${state.books.length ? state.books.map(book => {
+    <section class="panel review-top"><div class="panel-head">${icon('calendar')}<h2>${allSession ? '接着上次的复习' : total ? `今天有 ${total} 个词等你复习` : '现在，还没有到期词'}</h2></div><p>只复习已勾选“加入每日复习”的词书。可在我的词书中选择，默认不加入。记住的词逐步拉长间隔，忘记的词更快回来。</p><div class="curve">${['20 分钟', '1 小时', '9 小时', '1 天', '2 天', '4 天', '7 天', '15 天', '30 天'].map((value, i) => `${i ? '<i>→</i>' : ''}<span>${value}</span>`).join('')}</div><button class="button primary" data-action="review-all" ${!total && !allSession ? 'disabled' : ''}>${allSession ? '继续上次复习' : '复习全部到期词'}${icon('arrow')}</button></section>
+    <div class="section-head"><h2>按词书复习</h2></div><div class="review-list">${books.length ? books.map(book => {
       const stats = bookStats(book), session = state.sessions[sessionKey(book.id, 'review')];
       const upcoming = book.words.filter(w => w.review && w.review.dueAt > Date.now()).sort((a, b) => a.review.dueAt - b.review.dueAt)[0];
       return `<article class="review-book"><div class="book-cover">${icon('book')}</div><div><h3>${esc(book.name)}</h3><p>${session ? `还有 ${session.active.length} 个词待完成` : stats.due ? `${stats.due} 个到期词` : upcoming ? dueText(upcoming.review.dueAt) : '掌握词汇后会安排复习'}</p></div><button class="button ${stats.due || session ? 'soft' : ''} compact" data-action="start" data-book="${esc(book.id)}" data-mode="review" ${!stats.due && !session ? 'disabled' : ''}>${session ? '继续复习' : '开始复习'}${icon('arrow')}</button></article>`;
-    }).join('') : `<div class="empty"><div class="empty-icon">${icon('calendar')}</div><h3>先认识一些新词吧</h3><p>完成学习后，词屿会在合适的时间把它们安排回来。</p><button class="button primary" data-nav="library">去我的词书${icon('arrow')}</button></div>`}</div></div>`;
+    }).join('') : `<div class="empty"><div class="empty-icon">${icon('calendar')}</div><h3>选择每日复习的词书</h3><p>在词书旁勾选“加入每日复习”，这里就会显示所选词书。默认不会自动加入。</p><button class="button primary" data-nav="library">去我的词书${icon('arrow')}</button></div>`}</div></div>`;
 }
 const numberSetting = (key, title, description, min, max) => `<div class="setting-row"><div><h3>${title}</h3><p>${description}</p></div><input class="input" type="number" data-setting="${key}" aria-label="${title}" min="${min}" max="${max}" value="${state.settings[key]}"></div>`;
 const toggleSetting = (key, title, description) => `<div class="setting-row"><div><h3>${title}</h3><p>${description}</p></div><label class="toggle"><input type="checkbox" data-setting="${key}" aria-label="${title}" ${state.settings[key] ? 'checked' : ''}><span></span></label></div>`;
@@ -504,6 +505,13 @@ document.addEventListener('input', event => {
 });
 document.addEventListener('change', async event => {
   const element = event.target;
+  if (element.dataset.bookDailyReview) {
+    const bookId = element.dataset.bookDailyReview, focused = document.activeElement === element;
+    setDailyReview(state, bookId, element.checked);
+    await persist(); render();
+    if (focused) document.querySelector(`[data-book-daily-review="${CSS.escape(bookId)}"]`)?.focus({ preventScroll: true });
+    return;
+  }
   if (element.dataset.setting) {
     const key = element.dataset.setting;
     const value = element.type === 'checkbox' ? element.checked : element.type === 'number' || element.type === 'range' ? Number(element.value) : element.value;
