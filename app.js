@@ -3,7 +3,7 @@ import {
   bookById, wordById, bookStats, parseImport, decodeText, importEntries, shuffle, sessionKey,
   startSession, currentItem, chooseNext, revealSpeaking, gradeAnswer, correctToWrong, retryAnswer,
   advanceSession, isMastered, studyStats, setMastery, resetBook, removeWord, invalidateSessions,
-  dailyReviewBooks, dailyReviewCount, setDailyReview
+  dailyReviewBooks, dailyReviewCount, setDailyReview, normalizePOS, formatBookText
 } from './core.js';
 import { loadDurableState, saveDurableState, savingError, parseBackup, backupText, downloadFile } from './storage.js';
 import { Pronunciation } from './audio.js';
@@ -155,15 +155,15 @@ function openImport(presetId) {
   openModal('把词汇带到这里', '粘贴文字，或上传一份 TXT 词表。', `
     <div class="two-fields"><div class="field"><label for="import-target">保存到</label><select id="import-target"><option value="new">新建一本词书</option>${state.books.map(book => `<option value="${esc(book.id)}" ${presetId === book.id ? 'selected' : ''}>${esc(book.name)}</option>`).join('')}</select></div><div class="field" id="name-field"><label for="import-name">词书名称</label><input class="input" id="import-name" maxlength="60" placeholder="例如：雅思表达 · 家庭与情感"></div></div>
     <div class="import-tools"><span class="label">一行一个词条</span><div><button class="button ghost compact" data-action="import-example">填入示例</button><button class="button ghost compact" data-action="import-empty">清空</button></div></div>
-    <textarea class="textarea" id="import-text" spellcheck="false" aria-label="词表内容" placeholder="apple | 苹果&#10;look after / take care of | 照顾；照料&#10;resilience | /rɪˈzɪliəns/ | 韧性；恢复力"></textarea>
+    <textarea class="textarea" id="import-text" spellcheck="false" aria-label="词表内容" placeholder="apple | n. | 苹果&#10;look after / take care of | v. | 照顾；照料&#10;resilience | /rɪˈzɪliəns/ | n. | 韧性；恢复力"></textarea>
     <label class="dropzone" id="dropzone" for="import-file">${icon('upload')}<span id="file-label">选择或拖入 TXT · 自动识别常见编码</span><input id="import-file" type="file" accept=".txt,text/plain" hidden></label>
-    <details class="format-help"><summary>查看支持的词表格式</summary><p>英文与中文之间用 <code>|</code> 或 Tab 分隔。三列时，中间一列是音标。<br>多个释义用分号分隔；同义英文用 <code>/</code> 分隔。写作练习会要求写全同组表达。<br>以 <code>#</code> 开头的行会忽略；重复词会合并释义。</p></details>
+    <details class="format-help"><summary>查看支持的词表格式</summary><p>英文与中文之间用 <code>|</code> 或 Tab 分隔。三列可用“英文 | 词性 | 中文”或原有“英文 | 音标 | 中文”；四列用“英文 | 音标 | 词性 | 中文”。<br>例如 <code>annual | adj. | 每年的</code>，或 <code>annual | /ˈænjuəl/ | adj. | 每年的</code>。<br>支持 noun / verb / adjective / adverb、n. / v. / adj. / adv. 及中文词性；多词性用 / 分隔。释义开头的 n.、v. 等也会识别。未标注的词性不会在普通导入时猜测，可通过 AI 文档导入按语境识别。<br>多个释义用分号分隔；同义英文用 <code>/</code> 分隔。写作练习会要求写全同组表达。<br>以 <code>#</code> 开头的行会忽略；重复词会合并释义。</p></details>
     <div id="import-preview"></div><div class="modal-foot"><button class="button" data-action="close-modal">取消</button><button class="button primary" id="import-save" disabled>导入词书${icon('arrow')}</button></div>`);
   const textarea = $('#import-text'); const button = $('#import-save');
   const update = () => {
     parsed = parseImport(textarea.value); const preview = $('#import-preview');
     button.disabled = !parsed.entries.length; button.textContent = parsed.entries.length ? `导入 ${parsed.entries.reduce((n, e) => n + e.ens.length, 0)} 个词` : '导入词书';
-    preview.innerHTML = parsed.entries.length || parsed.errors.length ? `<div class="preview ${!parsed.entries.length ? 'errors' : ''}">${parsed.entries.length ? `已读出 ${parsed.entries.length} 组表达` : '暂时没有可导入的词'}${parsed.errors.length ? `<small>${parsed.errors.length} 行格式不完整，将跳过：${parsed.errors.slice(0, 3).map(e => `第 ${e.line} 行 · ${esc(e.message)}`).join('；')}</small>` : ''}<div class="preview-chips">${parsed.entries.slice(0, 4).map(e => `<span>${esc(e.ens[0])}</span>`).join('')}</div></div>` : '';
+    preview.innerHTML = parsed.entries.length || parsed.errors.length ? `<div class="preview ${!parsed.entries.length ? 'errors' : ''}">${parsed.entries.length ? `已读出 ${parsed.entries.length} 组表达` : '暂时没有可导入的词'}${parsed.errors.length ? `<small>${parsed.errors.length} 行格式不完整，将跳过：${parsed.errors.slice(0, 3).map(e => `第 ${e.line} 行 · ${esc(e.message)}`).join('；')}</small>` : ''}<div class="preview-chips">${parsed.entries.slice(0, 4).map(e => `<span>${esc(e.ens[0])}${e.pos ? ` · ${esc(e.pos)}` : ''}</span>`).join('')}</div></div>` : '';
   };
   const targetChanged = () => { $('#name-field').hidden = $('#import-target').value !== 'new'; };
   targetChanged(); $('#import-target').addEventListener('change', targetChanged); textarea.addEventListener('input', update);
@@ -205,9 +205,7 @@ function renameBook(bookId) {
 }
 function exportBook(bookId) {
   const book = bookById(state, bookId); if (!book) return;
-  const groups = new Map();
-  for (const word of book.words) { const group = word.synGroup || word.id; if (!groups.has(group)) groups.set(group, []); groups.get(group).push(word); }
-  const text = [...groups.values()].map(words => `${words.map(w => w.en).join(' / ')} | ${words[0].phonetic ? `${words[0].phonetic} | ` : ''}${[...new Set(words.flatMap(w => w.defs))].join('；')}`).join('\n');
+  const text = formatBookText(book);
   downloadFile(`${book.name.replace(/[\\/:*?"<>|]/g, '_')}.txt`, text, 'text/plain;charset=utf-8'); toast('词表已导出');
 }
 function wordsUi(book) {
@@ -233,7 +231,7 @@ function renderWordRows(book) {
   const pages = Math.ceil(words.length / 40); ui.page = Math.min(ui.page, Math.max(0, pages - 1));
   $('#word-count').textContent = `${words.length} 个词 · ${MODE_INFO[ui.mode].name}已掌握 ${words.filter(w => w[MODE_INFO[ui.mode].flag]).length} 个`;
   $('#word-list').innerHTML = words.slice(ui.page * 40, (ui.page + 1) * 40).map(word => `<article class="word-row">
-    <div class="word-english"><button class="icon-button" data-action="word-audio" data-book="${esc(book.id)}" data-word="${esc(word.id)}" aria-label="${ui.hiddenEn.has(word.id) ? '播放该词的发音' : `播放 ${esc(word.en)} 的发音`}">${icon('volume')}</button><div>${ui.hiddenEn.has(word.id) ? `<button class="masked" data-action="unmask-en" data-book="${esc(book.id)}" data-word="${esc(word.id)}">点击看英文</button>` : `<div class="word-en">${esc(word.en)}</div>${word.phonetic ? `<div class="word-phonetic">${esc(word.phonetic)}</div>` : ''}`}</div></div>
+    <div class="word-english"><button class="icon-button" data-action="word-audio" data-book="${esc(book.id)}" data-word="${esc(word.id)}" aria-label="${ui.hiddenEn.has(word.id) ? '播放该词的发音' : `播放 ${esc(word.en)} 的发音`}">${icon('volume')}</button><div>${ui.hiddenEn.has(word.id) ? `<button class="masked" data-action="unmask-en" data-book="${esc(book.id)}" data-word="${esc(word.id)}">点击看英文</button>` : `<div class="word-en">${esc(word.en)} ${posHTML(word)}</div>${word.phonetic ? `<div class="word-phonetic">${esc(word.phonetic)}</div>` : ''}`}</div></div>
     <div class="word-def">${ui.hiddenDef.has(word.id) ? `<button class="masked" data-action="unmask-def" data-book="${esc(book.id)}" data-word="${esc(word.id)}">点击看释义</button>` : esc(word.defs.join('；'))}</div>
     <div class="word-right"><div class="mastery-chips">${MODES.map(mode => `<button class="chip ${word[MODE_INFO[mode].flag] ? 'done' : ''}" data-action="toggle-mastery" data-book="${esc(book.id)}" data-word="${esc(word.id)}" data-mode="${mode}" aria-label="${MODE_INFO[mode].name}${word[MODE_INFO[mode].flag] ? '已掌握，点击改为未掌握' : '未掌握，点击标记已掌握'}">${MODE_INFO[mode].name}${word[MODE_INFO[mode].flag] ? ' ✓' : ''}</button>`).join('')}</div><button class="icon-button" data-action="word-menu" data-book="${esc(book.id)}" data-word="${esc(word.id)}" aria-label="管理 ${esc(word.en)}">${icon('more')}</button></div></article>`).join('') || `<div class="empty"><p style="margin:0">没有符合条件的词，换个筛选条件试试。</p></div>`;
   $('#pagination').innerHTML = pages > 1 ? `<button class="button" data-action="word-page" data-page="${ui.page - 1}" data-book="${esc(book.id)}" ${ui.page === 0 ? 'disabled' : ''}>上一页</button><span>${ui.page + 1} / ${pages}</span><button class="button" data-action="word-page" data-page="${ui.page + 1}" data-book="${esc(book.id)}" ${ui.page === pages - 1 ? 'disabled' : ''}>下一页</button>` : '';
@@ -242,16 +240,16 @@ function renderWordRows(book) {
 }
 function wordMenu(bookId, wordId) {
   const word = wordById(state, bookId, wordId); if (!word) return;
-  openModal(esc(word.en), esc(word.defs.join('；')), `<div class="menu-options">${state.settings.aiEnabled ? `<button class="button soft" data-action="ai-open-word" data-book="${esc(bookId)}" data-word="${esc(wordId)}">${icon('sparkle')}用 AI 造句、编故事、问用法</button>` : ''}<button class="button" data-action="edit-word" data-book="${esc(bookId)}" data-word="${esc(wordId)}">${icon('pen')}编辑英文、音标和释义</button><button class="button" data-action="mark-all" data-book="${esc(bookId)}" data-word="${esc(wordId)}" data-value="${!word.mastered}">${icon('check')}四种模式全部${word.mastered ? '标为未掌握' : '标为已掌握'}</button><button class="button danger" data-action="delete-word" data-book="${esc(bookId)}" data-word="${esc(wordId)}">${icon('trash')}删除这个词</button></div>`);
+  openModal(esc(word.en), esc(word.defs.join('；')), `<div class="menu-options">${state.settings.aiEnabled ? `<button class="button soft" data-action="ai-open-word" data-book="${esc(bookId)}" data-word="${esc(wordId)}">${icon('sparkle')}用 AI 造句、编故事、问用法</button>` : ''}<button class="button" data-action="edit-word" data-book="${esc(bookId)}" data-word="${esc(wordId)}">${icon('pen')}编辑英文、词性、音标和释义</button><button class="button" data-action="mark-all" data-book="${esc(bookId)}" data-word="${esc(wordId)}" data-value="${!word.mastered}">${icon('check')}四种模式全部${word.mastered ? '标为未掌握' : '标为已掌握'}</button><button class="button danger" data-action="delete-word" data-book="${esc(bookId)}" data-word="${esc(wordId)}">${icon('trash')}删除这个词</button></div>`);
 }
 function editWord(bookId, wordId) {
   const word = wordById(state, bookId, wordId); if (!word) return;
-  openModal('调整这个词', '', `<div class="field"><label for="edit-en">英文</label><input class="input" id="edit-en" value="${esc(word.en)}"></div><div class="field"><label for="edit-phonetic">音标（可不填）</label><input class="input" id="edit-phonetic" value="${esc(word.phonetic)}"></div><div class="field"><label for="edit-def">中文释义 · 多个用分号分隔</label><textarea class="textarea" id="edit-def" style="min-height:95px">${esc(word.defs.join('；'))}</textarea></div><p class="hint">编辑会结束本书未完成的练习，已经掌握的进度会保留。</p><div class="modal-foot"><button class="button" data-action="close-modal">取消</button><button class="button primary" id="edit-save">保存修改</button></div>`);
+  openModal('调整这个词', '', `<div class="field"><label for="edit-en">英文</label><input class="input" id="edit-en" value="${esc(word.en)}"></div><div class="field"><label for="edit-phonetic">音标（可不填）</label><input class="input" id="edit-phonetic" value="${esc(word.phonetic)}"></div><div class="field"><label for="edit-pos">词性（可不填，多词性用 / 分隔）</label><input class="input" id="edit-pos" value="${esc(word.pos || '')}" placeholder="n. / v. / adj. / adv."></div><div class="field"><label for="edit-def">中文释义 · 多个用分号分隔</label><textarea class="textarea" id="edit-def" style="min-height:95px">${esc(word.defs.join('；'))}</textarea></div><p class="hint">编辑会结束本书未完成的练习，已经掌握的进度会保留。</p><div class="modal-foot"><button class="button" data-action="close-modal">取消</button><button class="button primary" id="edit-save">保存修改</button></div>`);
   $('#edit-save').addEventListener('click', () => {
     const en = $('#edit-en').value.trim(), defs = $('#edit-def').value.split(/[;；\n]/).map(v => v.trim()).filter(Boolean);
     if (!en || !defs.length) { toast('请填写英文和中文释义'); return; }
     if (bookById(state, bookId).words.some(w => w.id !== wordId && normWord(w.en) === normWord(en))) { toast('这本词书里已经有这个英文了'); return; }
-    Object.assign(word, { en, ens: [en], phonetic: $('#edit-phonetic').value.trim(), defs });
+    Object.assign(word, { en, ens: [en], phonetic: $('#edit-phonetic').value.trim(), pos: normalizePOS($('#edit-pos').value), defs });
     invalidateSessions(state, bookId); persist(); closeModal(); render(); toast('修改已保存');
   });
 }
@@ -293,6 +291,7 @@ function progressLabel(session, item) {
   }
 }
 const defsHTML = (item, answer = false) => `<div class="study-defs${answer ? ' answer' : ''}">${item.defs.map(def => `<p>${esc(def)}</p>`).join('')}</div>`;
+const posHTML = item => item.pos ? `<span class="word-pos">${esc(item.pos)}</span>` : '';
 const speakButton = () => `<button class="play-button" data-action="play-current">${icon('volume')}再听一遍 <span class="muted">${state.settings.accent === 'uk' ? 'UK' : 'US'}</span></button>`;
 const audioOrb = () => '<button class="audio-orb" data-action="play-current" aria-label="播放英语发音"><span class="bar"></span><span class="bar"></span><span class="bar"></span><span class="bar"></span><span class="bar"></span></button>';
 function questionContent(session, item) {
@@ -301,8 +300,8 @@ function questionContent(session, item) {
   const typed = session.mode === 'write' || session.type === 'dict';
   const prompt = session.mode === 'write' ? '看中文 · 写出完整表达' : session.mode === 'speak' ? session.type === 'zh2en' ? '看中文 · 回忆英文' : '看英文 · 回忆中文' : session.type === 'dict' ? '听发音 · 写出英文' : session.mode === 'listen' ? '听发音 · 判断是否认识' : '看英文 · 回忆意思';
   return `<div class="card-label">${icon(MODE_INFO[session.mode].icon)}${prompt}</div>
-    ${showEnglish ? `<h2 class="study-word">${esc(item.en)}</h2>${item.phonetic ? `<p class="phonetic">${esc(item.phonetic)}</p>` : ''}${speakButton()}` : ''}
-    ${showChinese ? defsHTML(item) : ''}
+    ${showEnglish ? `<h2 class="study-word">${esc(item.en)}</h2>${posHTML(item)}${item.phonetic ? `<p class="phonetic">${esc(item.phonetic)}</p>` : ''}${speakButton()}` : ''}
+    ${showChinese ? `${posHTML(item)}${defsHTML(item)}` : ''}
     ${!showEnglish && !showChinese ? `${audioOrb()}<p class="listen-caption">点击声波重听${session.type === 'dict' ? '，写下你听到的英文' : '，在心里想一想它的意思'}</p>` : ''}
     ${typed ? `${session.mode === 'write' ? `<textarea class="answer-input textarea" id="answer-input" aria-label="英文答案" placeholder="写下英文表达${item.ens.length > 1 ? '，多个用 / 或换行分隔' : ''}" autocomplete="off" autocapitalize="none" spellcheck="false">${esc(session.input)}</textarea><p class="answer-note">${item.ens.length > 1 ? `这一组有 ${item.ens.length} 个英文表达，需要一次写全。` : '单词、短语和句子都按词书答案检查。'}</p>` : `<input class="answer-input" id="answer-input" aria-label="听写答案" placeholder="写下听到的英文…" autocomplete="off" autocapitalize="none" spellcheck="false" value="${esc(session.input)}"><p class="answer-note">忽略大小写、首尾空格和常见标点。</p>`}` : ''}
     <div class="item-progress">${progressLabel(session, item)}</div>`;
@@ -313,7 +312,7 @@ function answerContent(session, item) {
   const text = selfGrade ? '和答案对照一下，再如实自评' : correct ? ready ? '确认后，本词就完成了' : '答对了，再核对一下' : session.mode === 'audit' ? '已记下这个错词，继续查下一个' : '没关系，看一遍答案，再练一次';
   const english = session.mode === 'write' ? `<div class="synonyms">${item.ens.map(en => `<p>${esc(en)}</p>`).join('')}</div>` : `<h2 class="study-word">${esc(item.en)}</h2>`;
   return `<div class="feedback-label${!selfGrade && !correct ? ' wrong' : ''}">${icon(selfGrade ? 'eye' : correct ? 'check' : 'close')}${text}</div>
-    ${english}${item.phonetic ? `<p class="phonetic">${esc(item.phonetic)}</p>` : ''}${defsHTML(item, true)}${speakButton()}
+    ${english}${posHTML(item)}${item.phonetic ? `<p class="phonetic">${esc(item.phonetic)}</p>` : ''}${defsHTML(item, true)}${speakButton()}
     ${session.pending?.typed && !correct ? `<p class="submitted">你刚才写的是：${esc(session.pending.submitted)}</p>` : ''}
     <div class="item-progress">${progressLabel(session, item)}</div>`;
 }

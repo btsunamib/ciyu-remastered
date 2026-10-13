@@ -74,7 +74,7 @@ export function normalizeState(input) {
         } : (word.mastered || word.listenMastered || word.speakMastered || word.writeMastered) ? { stage: 1, dueAt: Date.now(), lastAt: null, lapses: 0 } : null;
         words.push({
           id: en === ens[0] && typeof word.id === 'string' ? word.id : uid(), en: en.trim(), ens: [en.trim()], synGroup: group,
-          phonetic: String(word.phonetic || ''), defs: Array.isArray(word.defs) ? word.defs.map(String).filter(Boolean) : [],
+          phonetic: String(word.phonetic || ''), pos: normalizePOS(word.pos) || posFromDefinitions(word.defs), defs: Array.isArray(word.defs) ? word.defs.map(String).filter(Boolean) : [],
           mastered: !!word.mastered, listenMastered: !!word.listenMastered, speakMastered: !!word.speakMastered, writeMastered: !!word.writeMastered,
           addedAt: Number(word.addedAt) || Date.now(), auditWrong: !!word.auditWrong, review
         });
@@ -90,6 +90,7 @@ export function normalizeState(input) {
       const clean = clone(session);
       clean.active = clean.active.filter(item => validItem(state, item, session.bookId));
       clean.queue = clean.queue.filter(item => validItem(state, item, session.bookId));
+      for (const item of [...clean.active, ...clean.queue]) item.pos = normalizePOS(item.pos) || normalizePOS(item.wordIds.map(id => wordById(state, item.bookId || session.bookId, id)?.pos));
       clean.currentId = clean.active.some(item => item.id === clean.currentId) ? clean.currentId : null;
       if (!clean.currentId) { clean.phase = 'question'; clean.pending = null; }
       if (clean.active.length || clean.queue.length) state.sessions[sessionKey(clean.bookId, clean.mode)] = clean;
@@ -111,6 +112,25 @@ function validItem(state, item, defaultBook) {
   return item && typeof item.id === 'string' && Array.isArray(item.wordIds) && item.wordIds.length &&
     item.wordIds.every(id => wordById(state, item.bookId || defaultBook, id));
 }
+const POS_ALIASES = {
+  n: 'n.', noun: 'n.', 名词: 'n.', v: 'v.', verb: 'v.', 动词: 'v.',
+  vt: 'vt.', 'transitive verb': 'vt.', 及物动词: 'vt.', vi: 'vi.', 'intransitive verb': 'vi.', 不及物动词: 'vi.',
+  adj: 'adj.', adjective: 'adj.', 形容词: 'adj.', adv: 'adv.', adverb: 'adv.', 副词: 'adv.',
+  pron: 'pron.', pronoun: 'pron.', 代词: 'pron.', prep: 'prep.', preposition: 'prep.', 介词: 'prep.',
+  conj: 'conj.', conjunction: 'conj.', 连词: 'conj.', det: 'det.', determiner: 'det.', 限定词: 'det.',
+  art: 'art.', article: 'art.', 冠词: 'art.', interj: 'interj.', int: 'interj.', interjection: 'interj.', 感叹词: 'interj.',
+  num: 'num.', numeral: 'num.', 数词: 'num.', aux: 'aux.', auxiliary: 'aux.', 助动词: 'aux.',
+  phr: 'phr.', phrase: 'phr.', 短语: 'phr.', sent: 'sent.', sentence: 'sent.', 句子: 'sent.'
+};
+const posParts = value => (Array.isArray(value) ? value : [value]).filter(v => typeof v === 'string').flatMap(v => v.split(/[/／;,；、&]+/)).map(v => v.trim().toLowerCase().replace(/\.$/, '')).filter(Boolean);
+export function normalizePOS(value) {
+  return [...new Set(posParts(value).map(part => Object.hasOwn(POS_ALIASES, part) ? POS_ALIASES[part] : part.slice(0, 60)))].join(' / ').slice(0, 160);
+}
+const recognizedPOS = value => { if (typeof value === 'string' && /^\s*\/.*\/\s*$/.test(value)) return ''; const parts = posParts(value); return parts.length && parts.every(part => Object.hasOwn(POS_ALIASES, part)) ? normalizePOS(value) : ''; };
+export function posFromDefinitions(defs) {
+  if (!Array.isArray(defs)) return '';
+  return normalizePOS(defs.flatMap(def => typeof def === 'string' ? def.split(/[;；]/).map(part => part.trim().match(/^(?:n|v|vt|vi|adj|adv|pron|prep|conj|det|art|interj|int|num|aux)\./i)?.[0] || '').filter(Boolean) : []));
+}
 export function parseImport(text) {
   const entries = new Map(), errors = [];
   String(text || '').replace(/^\uFEFF/, '').split(/\r?\n/).forEach((raw, index) => {
@@ -118,12 +138,21 @@ export function parseImport(text) {
     const columns = line.split(/[|｜\t]/).map(part => part.trim());
     if (columns.length < 2) { errors.push({ line: index + 1, message: '英文和中文之间请加 | 或 Tab' }); return; }
     const ens = columns[0].split(/[/；;、]+/).map(en => en.trim()).filter(Boolean);
-    const phonetic = columns.length >= 3 ? columns[1] : '';
-    const defs = columns.slice(columns.length >= 3 ? 2 : 1).join('；').split(/[;；]/).map(def => def.trim()).filter(Boolean);
+    let phonetic = '', pos = '', defsStart = 1;
+    if (columns.length >= 3) {
+      pos = recognizedPOS(columns[1]);
+      if (!pos) phonetic = columns[1];
+      defsStart = 2;
+      if (columns.length >= 4 && (recognizedPOS(columns[2]) || !columns[2])) {
+        pos = normalizePOS([pos, recognizedPOS(columns[2])]); defsStart = 3;
+      }
+    }
+    const defs = columns.slice(defsStart).join('；').split(/[;；]/).map(def => def.trim()).filter(Boolean);
+    pos = normalizePOS([pos, posFromDefinitions(defs)]);
     if (!ens.length || !defs.length) { errors.push({ line: index + 1, message: !ens.length ? '缺少英文' : '缺少中文释义' }); return; }
     const key = normWord(ens[0]), previous = entries.get(key);
-    if (previous) { previous.ens = [...new Set([...previous.ens, ...ens])]; previous.defs = [...new Set([...previous.defs, ...defs])]; previous.phonetic ||= phonetic; }
-    else entries.set(key, { ens, defs, phonetic });
+    if (previous) { previous.ens = [...new Set([...previous.ens, ...ens])]; previous.defs = [...new Set([...previous.defs, ...defs])]; previous.phonetic ||= phonetic; previous.pos = normalizePOS([previous.pos, pos]); }
+    else entries.set(key, { ens, defs, phonetic, pos });
   });
   return { entries: [...entries.values()], errors };
 }
@@ -133,6 +162,15 @@ export function decodeText(buffer) {
   if (bytes[0] === 0xfe && bytes[1] === 0xff) return new TextDecoder('utf-16be').decode(buffer);
   try { return new TextDecoder('utf-8', { fatal: true }).decode(buffer); }
   catch { return new TextDecoder('gb18030').decode(buffer); }
+}
+export function formatBookText(book) {
+  const groups = new Map();
+  for (const word of book.words) { const group = word.synGroup || word.id; if (!groups.has(group)) groups.set(group, []); groups.get(group).push(word); }
+  return [...groups.values()].map(words => {
+    const en = words.map(w => w.en).join(' / '), phonetic = words[0].phonetic || '', pos = normalizePOS(words.map(w => w.pos));
+    const defs = [...new Set(words.flatMap(w => w.defs))].join('；');
+    return pos ? `${en} | ${phonetic} | ${pos} | ${defs}` : `${en} | ${phonetic ? `${phonetic} | ` : ''}${defs}`;
+  }).join('\n');
 }
 export function importEntries(state, entries, name, targetId) {
   let book = bookById(state, targetId);
@@ -144,12 +182,12 @@ export function importEntries(state, entries, name, targetId) {
     for (const en of entry.ens) {
       const word = book.words.find(w => normWord(w.en) === normWord(en));
       if (word) {
-        word.defs = [...new Set([...word.defs, ...entry.defs])]; word.phonetic ||= entry.phonetic;
+        word.defs = [...new Set([...word.defs, ...entry.defs])]; word.phonetic ||= entry.phonetic; word.pos = normalizePOS([word.pos, entry.pos, posFromDefinitions(entry.defs)]);
         // Re-importing a synonym group joins it instead of leaving split writing groups.
         if (entry.ens.length > 1) word.synGroup = group;
         updated++;
       } else {
-        book.words.push({ id: uid(), en, ens: [en], synGroup: group, phonetic: entry.phonetic, defs: [...entry.defs],
+        book.words.push({ id: uid(), en, ens: [en], synGroup: group, phonetic: entry.phonetic, pos: normalizePOS(entry.pos) || posFromDefinitions(entry.defs), defs: [...entry.defs],
           mastered: false, listenMastered: false, speakMastered: false, writeMastered: false, addedAt: Date.now(), auditWrong: false, review: null });
         added++;
       }
@@ -166,7 +204,7 @@ export function bookStats(book, now = Date.now()) {
 }
 function makeItem(word, bookId) {
   return { id: uid(), bookId, wordIds: [word.id], en: word.en, ens: [word.en], defs: [...word.defs], phonetic: word.phonetic,
-    streak: 0, dictRight: 0, zh2enRight: 0, en2zhRight: 0, right: 0, wrongs: 0, nextEligible: 0, lastAsked: 0,
+    pos: normalizePOS(word.pos), streak: 0, dictRight: 0, zh2enRight: 0, en2zhRight: 0, right: 0, wrongs: 0, nextEligible: 0, lastAsked: 0,
     pendingWrong: false, visitOld: false, returnOnKnow: true, stage: word.review?.stage || 1, lapses: word.review?.lapses || 0 };
 }
 export const dailyReviewBooks = state => state.books.filter(book => book.dailyReview === true);
@@ -188,7 +226,7 @@ export function buildItems(state, bookId, mode, reset = false, now = Date.now())
   const groups = new Map();
   for (const word of pool) { const group = word.synGroup || word.id; if (!groups.has(group)) groups.set(group, []); groups.get(group).push(word); }
   return shuffle([...groups.values()]).map(words => ({ ...makeItem(words[0], book.id), wordIds: words.map(w => w.id),
-    ens: [...new Set(words.map(w => w.en))], defs: [...new Set(words.flatMap(w => w.defs))] }));
+    ens: [...new Set(words.map(w => w.en))], pos: normalizePOS(words.map(w => w.pos)), defs: [...new Set(words.flatMap(w => w.defs))] }));
 }
 export function startSession(state, bookId, mode, options = {}) {
   if (!MODE_INFO[mode]) throw new Error('未知的学习模式');
@@ -407,14 +445,14 @@ export function migrateLegacy(input) {
   }
   return state;
 }
-export const SAMPLE_TEXT = `emotional bonds | 情感纽带
-face-to-face interactions | 面对面的交流
-look after / take care of | 照顾；照料
-disposable income | 可支配收入
-preserve | /prɪˈzɜːv/ | 保留；保护
-resilience | /rɪˈzɪliəns/ | 韧性；恢复力
-keep track of | 了解动态；跟踪
-timely practical support | 及时的实际支持`;
+export const SAMPLE_TEXT = `emotional bonds | n. | 情感纽带
+face-to-face interactions | n. | 面对面的交流
+look after / take care of | v. | 照顾；照料
+disposable income | n. | 可支配收入
+preserve | /prɪˈzɜːv/ | v. | 保留；保护
+resilience | /rɪˈzɪliəns/ | n. | 韧性；恢复力
+keep track of | v. | 了解动态；跟踪
+timely practical support | n. | 及时的实际支持`;
 
 export function recordStudy(state, word, now = Date.now()) {
   const key = normWord(word); if (!key) return;

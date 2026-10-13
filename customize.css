@@ -121,3 +121,5 @@ html[data-theme="dark"] .continue-card,html[data-theme="dark"] .empty,html[data-
 @media(max-width:390px){.ai-word-picker{grid-template-columns:1fr}.setting-row select{max-width:145px}.appearance-preview>span{display:none}}
 
 .book-daily-review{display:flex;align-items:center;gap:7px;width:fit-content;max-width:100%;min-height:32px;margin-top:5px;font-size:calc(11px * var(--font-scale));color:var(--muted);cursor:pointer;line-height:1.5}.book-daily-review input{width:17px;height:17px;margin:0;flex-shrink:0;accent-color:var(--primary)}.book-daily-review:has(input:checked){color:var(--primary)}
+
+.word-pos{display:inline-block;max-width:100%;vertical-align:middle;overflow-wrap:anywhere;font-size:calc(11px * var(--font-scale));line-height:1.6;font-weight:500;color:var(--primary);background:var(--primary-soft);border-radius:6px;padding:2px 7px;letter-spacing:0}.study-card>.word-pos{margin:8px 0}
