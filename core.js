@@ -1,4 +1,5 @@
 import { normalizeMaple } from './lap-core.js';
+import { adaptiveFields, initialReview, scheduleReview } from './review-scheduler.js';
 
 export const STORAGE_KEY = 'ciyu.remastered.v2';
 export const LEGACY_KEY = 'ciyu.vocab.v1';
@@ -70,7 +71,7 @@ export function normalizeState(input) {
         seenWords.add(normWord(en));
         const review = word.review && Number.isFinite(Number(word.review.dueAt)) ? {
           stage: Math.min(9, Math.max(1, Number(word.review.stage) || 1)), dueAt: Number(word.review.dueAt),
-          lastAt: Number(word.review.lastAt) || null, lapses: Math.max(0, Number(word.review.lapses) || 0)
+          lastAt: Number(word.review.lastAt) || null, lapses: Math.max(0, Number(word.review.lapses) || 0), ...adaptiveFields(word.review)
         } : (word.mastered || word.listenMastered || word.speakMastered || word.writeMastered) ? { stage: 1, dueAt: Date.now(), lastAt: null, lapses: 0 } : null;
         words.push({
           id: en === ens[0] && typeof word.id === 'string' ? word.id : uid(), en: en.trim(), ens: [en.trim()], synGroup: group,
@@ -336,7 +337,13 @@ export function retryAnswer(session) {
   session.phase = 'question'; session.pending = null; session.input = ''; return true;
 }
 export function ensureReview(word, now = Date.now()) {
-  if (!word.review) word.review = { stage: 1, dueAt: now + INTERVALS[0], lastAt: now, lapses: 0 };
+  if (!word.review) word.review = { stage: 1, lapses: 0, ...initialReview(now) };
+}
+export function planWordReview(word, correct, now = Date.now()) {
+  const previous = word.review || { stage: 1, dueAt: 0, lapses: 0 };
+  const stage = Math.max(1, Math.min(9, Number(previous.stage) || 1)), lapses = Math.max(0, Number(previous.lapses) || 0);
+  const memory = scheduleReview(previous, correct, now, { intervalMs: INTERVALS[Math.max(0, stage - lapses - 1)], successCount: stage - 1, reviewStreak: Math.max(0, stage - lapses - 1), failureCount: lapses });
+  return { stage: Math.min(9, memory.reviewStreak + 1), lapses: memory.failureCount, ...memory };
 }
 function injectOld(state, session) {
   if (session.mode !== 'read' || !state.settings.mixOld || session.newMasteredSinceMix < state.settings.mixEvery) return;
@@ -357,9 +364,8 @@ export function advanceSession(state, session, now = Date.now()) {
   if (session.mode === 'review') {
     const word = wordById(state, item.bookId, item.wordIds[0]);
     if (word) {
-      const stage = correct ? Math.min(9, item.stage + 1) : 1;
-      const effective = correct ? Math.max(1, stage - item.lapses) : 1;
-      word.review = { stage, dueAt: now + INTERVALS[effective - 1], lastAt: now, lapses: item.lapses };
+      word.review = planWordReview(word, correct, now);
+      item.stage = word.review.stage; item.lapses = word.review.lapses;
     }
   }
   if (session.mode === 'audit') {

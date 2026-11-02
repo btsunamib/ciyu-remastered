@@ -5,6 +5,7 @@ import {
   advanceSession, correctToWrong, revealSpeaking, setMastery, spellingMatches, normalizeState,
   migrateLegacy, INTERVALS, removeWord, sessionKey
 } from './core.js';
+import { RELEARN_REVIEW } from './review-scheduler.js';
 import { pronunciationURL } from './audio.js';
 import { loadState, parseBackup, backupText } from './storage.js';
 function fixture(text = 'apple | 苹果') { const state = freshState(); const { book } = importEntries(state, parseImport(text).entries, '测试词书'); return { state, book }; }
@@ -92,8 +93,8 @@ test('复习只收集到期词，正确延长间隔，忘记回退并在本轮�
   book.words[0].review = { stage: 1, dueAt: 1, lapses: 0 }; book.words[1].review = { stage: 1, dueAt: 200000, lapses: 0 };
   book.dailyReview = true;
   const s = startSession(state, 'all', 'review', { now: 1000 }); assert.equal(s.initialTotal, 1);
-  next(state, s, false, 1000); assert.equal(s.active.length, 1); assert.equal(book.words[0].review.dueAt, 1000 + INTERVALS[0]);
-  next(state, s, true, 2000); assert.equal(book.words[0].review.stage, 2); assert.ok(book.words[0].review.dueAt > 2000);
+  next(state, s, false, 1000); assert.equal(s.active.length, 1); assert.equal(book.words[0].review.dueAt, 1000 + RELEARN_REVIEW);
+  next(state, s, true, 2000); assert.equal(book.words[0].review.stage, 1); assert.ok(book.words[0].review.dueAt > 2000);
 });
 test('各本词书、各模式的断点独立，检查后反馈状态可完整恢复', () => {
   const { state, book } = fixture(); const read = startSession(state, book.id, 'read');

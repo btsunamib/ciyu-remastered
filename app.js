@@ -3,7 +3,7 @@ import {
   bookById, wordById, bookStats, parseImport, decodeText, importEntries, shuffle, sessionKey,
   startSession, currentItem, chooseNext, revealSpeaking, gradeAnswer, correctToWrong, retryAnswer,
   advanceSession, isMastered, studyStats, setMastery, resetBook, removeWord, invalidateSessions,
-  dailyReviewBooks, dailyReviewCount, setDailyReview, normalizePOS, formatBookText
+  dailyReviewBooks, dailyReviewCount, setDailyReview, normalizePOS, formatBookText, planWordReview
 } from './core.js';
 import { loadDurableState, saveDurableState, savingError, parseBackup, backupText, downloadFile } from './storage.js';
 import { Pronunciation } from './audio.js';
@@ -258,7 +258,7 @@ function renderReview() {
   const books = dailyReviewBooks(state), total = dailyReviewCount(state);
   const allSession = state.sessions[sessionKey('all', 'review')];
   main.innerHTML = `<div class="page"><div class="page-intro"><div><h1>在遗忘前，再见一面。</h1><p>复习到期的词，让短暂的熟悉变成长期的记忆。</p></div></div>
-    <section class="panel review-top"><div class="panel-head">${icon('calendar')}<h2>${allSession ? '接着上次的复习' : total ? `今天有 ${total} 个词等你复习` : '现在，还没有到期词'}</h2></div><p>只复习已勾选“加入每日复习”的词书。可在我的词书中选择，默认不加入。记住的词逐步拉长间隔，忘记的词更快回来。</p><div class="curve">${['20 分钟', '1 小时', '9 小时', '1 天', '2 天', '4 天', '7 天', '15 天', '30 天'].map((value, i) => `${i ? '<i>→</i>' : ''}<span>${value}</span>`).join('')}</div><button class="button primary" data-action="review-all" ${!total && !allSession ? 'disabled' : ''}>${allSession ? '继续上次复习' : '复习全部到期词'}${icon('arrow')}</button></section>
+    <section class="panel review-top"><div class="panel-head">${icon('calendar')}<h2>${allSession ? '接着上次的复习' : total ? `今天有 ${total} 个词等你复习` : '现在，还没有到期词'}</h2></div><p>只复习已勾选“加入每日复习”的词书。可在我的词书中选择，默认不加入。每个词单独记录到期复习的连续答对次数：越熟悉，间隔越长；答错后缩短，之后可以逐步恢复。同一轮立即重答或提前练习，不会直接拉长间隔。</p><div class="curve">${['连续答对 → 逐步延长', '答错 → 10 分钟后巩固', '最长间隔 180 天'].map((value, i) => `${i ? '<i>·</i>' : ''}<span>${value}</span>`).join('')}</div><button class="button primary" data-action="review-all" ${!total && !allSession ? 'disabled' : ''}>${allSession ? '继续上次复习' : '复习全部到期词'}${icon('arrow')}</button></section>
     <div class="section-head"><h2>按词书复习</h2></div><div class="review-list">${books.length ? books.map(book => {
       const stats = bookStats(book), session = state.sessions[sessionKey(book.id, 'review')];
       const upcoming = book.words.filter(w => w.review && w.review.dueAt > Date.now()).sort((a, b) => a.review.dueAt - b.review.dueAt)[0];
@@ -287,7 +287,7 @@ function progressLabel(session, item) {
     case 'speak': return `中 → 英 ${Math.min(item.zh2enRight, 2)}/2 · 英 → 中 ${Math.min(item.en2zhRight, 2)}/2${dots(item.zh2enRight + item.en2zhRight, 4)}`;
     case 'write': return `写全表达 ${Math.min(item.right, 2)} / 2${dots(item.right, 2)}`;
     case 'audit': return '每个词只考一次 · 不重复回炉';
-    case 'review': return `第 ${item.stage} 阶段复习 · ${esc(bookById(state, item.bookId)?.name || '')}`;
+    case 'review': return `间隔随记忆表现调整 · ${esc(bookById(state, item.bookId)?.name || '')}`;
     default: return '';
   }
 }
@@ -311,10 +311,13 @@ function answerContent(session, item) {
   const selfGrade = session.phase === 'self-grade'; const correct = session.pending?.correct;
   const ready = !selfGrade && correct && isMastered(session, item, state.settings);
   const text = selfGrade ? '和答案对照一下，再如实自评' : correct ? ready ? '确认后，本词就完成了' : '答对了，再核对一下' : session.mode === 'audit' ? '已记下这个错词，继续查下一个' : '没关系，看一遍答案，再练一次';
+  const reviewWord = session.mode === 'review' ? wordById(state, item.bookId, item.wordIds[0]) : null;
+  const reviewPlan = reviewWord ? planWordReview(reviewWord, correct, Date.now()) : null;
   const english = session.mode === 'write' ? `<div class="synonyms">${item.ens.map(en => `<p>${esc(en)}</p>`).join('')}</div>` : `<h2 class="study-word">${esc(item.en)}</h2>`;
   return `<div class="feedback-label${!selfGrade && !correct ? ' wrong' : ''}">${icon(selfGrade ? 'eye' : correct ? 'check' : 'close')}${text}</div>
     ${english}${posHTML(item)}${item.phonetic ? `<p class="phonetic">${esc(item.phonetic)}</p>` : ''}${defsHTML(item, true)}${speakButton()}
     ${session.pending?.typed && !correct ? `<p class="submitted">你刚才写的是：${esc(session.pending.submitted)}</p>` : ''}
+    ${reviewPlan ? `<p class="hint review-next">下次复习：${dueText(reviewPlan.dueAt)} · 连续到期答对 ${reviewPlan.reviewStreak} 次</p>` : ''}
     <div class="item-progress">${progressLabel(session, item)}</div>`;
 }
 function sessionActions(session) {

@@ -1,3 +1,4 @@
+import { adaptiveFields, scheduleReview } from './review-scheduler.js';
 // LAP data is separate from ordinary word books, but lives in the same backup.
 export const POS = { noun: '名词 n.', verb: '动词 v.', pastTense: '过去式', adjective: '形容词 adj.', adverb: '副词 adv.', pronoun: '代词 pron.', preposition: '介词 prep.', conjunction: '连词 conj.', determiner: '限定词 det.', interjection: '感叹词 interj.', numeral: '数词 num.' };
 export const SKILLS = { spelling: '听音拼写', forms: '词性转换', meaning: '词义回忆' };
@@ -32,7 +33,7 @@ export function normalizeEntries(raw, strict = false) {
     const progress = {};
     for (const skill of Object.keys(SKILLS)) {
       const p = item.progress?.[skill];
-      progress[skill] = { streak: Math.min(10, Math.max(0, Number(p?.streak) || 0)), stage: Math.min(5, Math.max(0, Number(p?.stage) || 0)), dueAt: Math.max(0, Number(p?.dueAt) || 0) };
+      progress[skill] = { streak: Math.min(10, Math.max(0, Number(p?.streak) || 0)), stage: Math.min(5, Math.max(0, Number(p?.stage) || 0)), dueAt: Math.max(0, Number(p?.dueAt) || 0), ...adaptiveFields(p) };
     }
     entries.push({ id: entryId, word, meaning, forms, note: text(item.note), progress, ...(Number.isInteger(item.num) ? { num: item.num } : {}), ...(text(item.pos, 100) ? { pos: text(item.pos, 100) } : {}) });
     if (entries.length > 1000) throw new Error('单份 LAP 最多 1000 个词族，请拆分资料');
@@ -159,9 +160,8 @@ export function validateGrades(raw, questions) {
 export function updateProgress(entry, skill, correct, now = Date.now()) {
   const p = entry.progress[skill];
   const intervals = [20 * 60e3, 86400e3, 3 * 86400e3, 7 * 86400e3, 15 * 86400e3, 30 * 86400e3];
-  p.streak = correct ? p.streak + 1 : 0;
-  p.stage = correct ? Math.min(5, p.stage + 1) : 0;
-  p.dueAt = correct ? now + intervals[p.stage] : now;
+  const memory = scheduleReview(p, correct, now, { intervalMs: intervals[p.stage] || intervals[0], successCount: p.stage, reviewStreak: Math.min(p.streak, p.stage), failureCount: 0 });
+  Object.assign(p, memory, { streak: memory.reviewStreak, stage: Math.min(5, memory.reviewStreak) });
 }
 export function startPractice(collection, all = false, now = Date.now(), skills = Object.keys(SKILLS)) {
   const tasks = [];
